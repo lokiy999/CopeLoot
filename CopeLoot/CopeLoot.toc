@@ -1,0 +1,8 @@
+## Interface: 11200
+## Title: CopeLoot
+## Notes: Wishlist-based loot system for the Cope guild.
+## Author: Cope
+## Version: 0.1.0
+## SavedVariables: CopeLootDB
+
+CopeLoot.lua
