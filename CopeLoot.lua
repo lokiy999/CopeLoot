@@ -187,7 +187,7 @@ local ROW_HEIGHT     = 20
 local HEADER_HEIGHT  = 24
 local TAB_HEIGHT     = 24
 local TAB_WIDTH      = 100
-local VISIBLE_ROWS   = 14
+local VISIBLE_ROWS   = 13
 
 -- Scrollbar geometry. The content area is inset by SCROLL_GUTTER on the right
 -- so rows/headers never run underneath the scrollbar.
