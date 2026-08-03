@@ -64,6 +64,84 @@ local function IndexPlayerData()
 	end
 end
 
+-- ---------------------------------------------------------------------------
+-- Item contention index  (rebuilt on each RefreshUI from the active dataset)
+-- ---------------------------------------------------------------------------
+-- itemIndex[normalised_name] = {
+--   highest  = 1..3,          -- the highest-priority (lowest number) column
+--   slots    = { [col] = count },   -- how many players have it in this column
+-- }
+local itemIndex = {}
+
+local function NormaliseItemName(raw)
+	-- Strip parenthetical notes like "(Questhero)" or "(Ronald)" so that
+	-- "Maladath (Ronald)" and "Maladath" are treated as the same item.
+	if not raw or raw == "" then return "" end
+	local name = string.gsub(raw, "%s*%(.-%)%s*$", "")
+	-- Strip trailing whitespace
+	name = string.gsub(name, "%s+$", "")
+	return string.lower(name)
+end
+
+local function BuildItemIndex(playerList)
+	itemIndex = {}
+	for i = 1, table.getn(playerList) do
+		local p = playerList[i]
+		for col = 1, 3 do
+			local raw
+			if col == 1 then raw = p.wish1
+			elseif col == 2 then raw = p.wish2
+			else raw = p.wish3
+			end
+			local key = NormaliseItemName(raw)
+			if key ~= "" then
+				if not itemIndex[key] then
+					itemIndex[key] = { highest = col, slots = {} }
+				end
+				if not itemIndex[key].slots[col] then
+					itemIndex[key].slots[col] = 0
+				end
+				itemIndex[key].slots[col] = itemIndex[key].slots[col] + 1
+				if col < itemIndex[key].highest then
+					itemIndex[key].highest = col
+				end
+			end
+		end
+	end
+end
+
+-- Returns r, g, b for an item text in a given column.
+-- Rules:
+--   Green  (0.3, 1, 0.3)  : item is untied in ANY column and this is the
+--                            highest column it appears in.
+--   Red    (1, 0.3, 0.3)  : item appears in a HIGHER-priority column for
+--                            someone else (i.e. itemIndex.highest < col).
+--   Yellow (1, 1, 0.3)    : item is tied (>1 player) in this column AND
+--                            this is the highest column it appears in.
+--   White  (1, 1, 1)      : fallback / empty.
+local function GetItemColor(rawName, col)
+	local key = NormaliseItemName(rawName)
+	if key == "" then return 0.4, 0.4, 0.4 end  -- empty slot, dim
+
+	local info = itemIndex[key]
+	if not info then return 1, 1, 1 end  -- unknown, white
+
+	-- Red: someone else has it in a higher column
+	if info.highest < col then
+		return 1, 0.3, 0.3
+	end
+
+	-- This IS the highest column for this item
+	local countHere = info.slots[col] or 0
+	if countHere > 1 then
+		-- Yellow: tied in the highest column
+		return 1, 1, 0.3
+	end
+
+	-- Green: untied in the highest column
+	return 0.3, 1, 0.3
+end
+
 -- Returns an ordered list of player entries for the active filter.
 -- filter: "all" | "raid"
 local function GetFilteredPlayers(filter)
@@ -512,9 +590,10 @@ function CopeLoot:RefreshUI()
 		filterRaidBtn:SetBackdropColor(0.2, 0.5, 0.8, 1)
 	end
 
-	-- Get data
+	-- Get data and rebuild the contention index for the visible set
 	local players = GetFilteredPlayers(activeFilter)
 	local total = table.getn(players)
+	BuildItemIndex(players)
 
 	-- Update scroll range
 	local maxScroll = total - VISIBLE_ROWS
@@ -542,12 +621,15 @@ function CopeLoot:RefreshUI()
 			row.w2FS:SetText(p.wish2 ~= "" and p.wish2 or "-")
 			row.w3FS:SetText(p.wish3 ~= "" and p.wish3 or "-")
 
-			row.w1FS:SetTextColor(1, 1, 1)
-			row.w2FS:SetTextColor(1, 1, 1)
-			row.w3FS:SetTextColor(0.7, 0.7, 0.7)
-			if p.wish3 == "" then
-				row.w3FS:SetTextColor(0.4, 0.4, 0.4)
-			end
+			-- Apply contention-based coloring
+			local r1, g1, b1 = GetItemColor(p.wish1, 1)
+			row.w1FS:SetTextColor(r1, g1, b1)
+
+			local r2, g2, b2 = GetItemColor(p.wish2, 2)
+			row.w2FS:SetTextColor(r2, g2, b2)
+
+			local r3, g3, b3 = GetItemColor(p.wish3, 3)
+			row.w3FS:SetTextColor(r3, g3, b3)
 		else
 			row.nameFS:SetText("")
 			row.w1FS:SetText("")
