@@ -27,7 +27,8 @@ local CLASS_COLORS = {
 -- Saved variables  (settings persisted across sessions)
 -- ---------------------------------------------------------------------------
 -- CopeLootDB = {
---   autoSwap = true/false,
+--   autoSwap      = true/false,
+--   autoBroadcast = true/false,
 -- }
 
 local function EnsureDB()
@@ -36,6 +37,9 @@ local function EnsureDB()
 	end
 	if CopeLootDB.autoSwap == nil then
 		CopeLootDB.autoSwap = true
+	end
+	if CopeLootDB.autoBroadcast == nil then
+		CopeLootDB.autoBroadcast = false
 	end
 	return CopeLootDB
 end
@@ -179,6 +183,171 @@ local function GetFilteredPlayers(filter)
 end
 
 -- ---------------------------------------------------------------------------
+-- Loot detection state
+-- ---------------------------------------------------------------------------
+-- Each detected loot drop is stored in this list.  Entries are added when the
+-- raid leader links an epic item in /say.
+-- detectedLoot = {
+--   { itemLink = "|cffa335ee...", itemName = "...", claimants = {
+--       { name = "Lokiy", col = 1 },   -- col = priority column (1 = #1, etc.)
+--     }, verdict = "Lokiy" | "TIE: A, B" | "No wishlist match" },
+-- }
+local detectedLoot = {}
+local LOOT_ROW_HEIGHT = 56     -- each loot entry takes several lines
+
+-- Returns the name of the current raid leader, or nil.
+local function GetRaidLeaderName()
+	local numRaid = GetNumRaidMembers() or 0
+	for i = 1, numRaid do
+		-- In 1.12.1, GetRaidRosterInfo(i) returns: name, rank, subgroup, level,
+		-- class, fileName, zone, online, isDead.  rank 2 = leader.
+		local name, rank = GetRaidRosterInfo(i)
+		if name and rank == 2 then
+			return name
+		end
+	end
+	return nil
+end
+
+-- Build a set of names currently in the raid.
+local function GetRaidMemberSet()
+	local set = {}
+	local numRaid = GetNumRaidMembers() or 0
+	for i = 1, numRaid do
+		local name = UnitName("raid" .. i)
+		if name then set[name] = true end
+	end
+	return set
+end
+
+-- Resolve who should get a detected item.
+-- Returns an ordered list of { name, col } sorted by priority column,
+-- and a verdict string.
+local function ResolveLoot(itemName)
+	local key = NormaliseItemName(itemName)
+	if key == "" then return {}, "No item" end
+
+	local raidSet = GetRaidMemberSet()
+	local claimants = {}
+
+	if CopeLoot_PlayerData then
+		for i = 1, table.getn(CopeLoot_PlayerData) do
+			local p = CopeLoot_PlayerData[i]
+			if raidSet[p.name] then
+				for col = 1, 3 do
+					local raw
+					if col == 1 then raw = p.wish1
+					elseif col == 2 then raw = p.wish2
+					else raw = p.wish3
+					end
+					if NormaliseItemName(raw) == key then
+						table.insert(claimants, { name = p.name, col = col })
+					end
+				end
+			end
+		end
+	end
+
+	if table.getn(claimants) == 0 then
+		return {}, "No wishlist match in raid"
+	end
+
+	-- Sort by priority column (ascending = higher priority first)
+	table.sort(claimants, function(a, b) return a.col < b.col end)
+
+	local bestCol = claimants[1].col
+	local winners = {}
+	for i = 1, table.getn(claimants) do
+		if claimants[i].col == bestCol then
+			table.insert(winners, claimants[i].name)
+		end
+	end
+
+	local verdict
+	if table.getn(winners) == 1 then
+		verdict = winners[1] .. " (priority #" .. bestCol .. ")"
+	else
+		verdict = "TIE #" .. bestCol .. ": " .. table.concat(winners, ", ")
+	end
+
+	return claimants, verdict
+end
+
+-- Process a chat message: if it contains an epic item link, record it.
+function CopeLoot:OnChatMsg(sender, message)
+	-- Only process from the raid leader
+	local leader = GetRaidLeaderName()
+	if not leader or sender ~= leader then return end
+
+	-- Find all epic (purple, quality 4) item links in the message.
+	-- Epic links use color code |cffa335ee in 1.12.1.
+	local pos = 1
+	while true do
+		local s, e, itemLink = string.find(message,
+			"(|cffa335ee|Hitem:%d+:%d+:%d+:%d+|h%[.-%]|h|r)", pos)
+		if not s then break end
+		pos = e + 1
+
+		-- Extract item name from the link
+		local _, _, itemName = string.find(itemLink, "%[(.-)%]")
+		if itemName then
+			local claimants, verdict = ResolveLoot(itemName)
+
+			table.insert(detectedLoot, {
+				itemLink  = itemLink,
+				itemName  = itemName,
+				claimants = claimants,
+				verdict   = verdict,
+			})
+
+			Print("Detected: " .. itemLink .. " -> " .. verdict)
+
+			-- Auto-broadcast if enabled
+			local db = EnsureDB()
+			if db.autoBroadcast then
+				CopeLoot:BroadcastLootEntry(table.getn(detectedLoot))
+			end
+
+			-- Switch to loot tab if window is open
+			if mainFrame and mainFrame:IsShown() then
+				activeTab = "loot"
+				scrollOffset = 0
+				CopeLoot:RefreshUI()
+			end
+		end
+	end
+end
+
+-- Broadcast a single loot entry to raid chat.
+function CopeLoot:BroadcastLootEntry(index)
+	local entry = detectedLoot[index]
+	if not entry then return end
+
+	local msg = "[CopeLoot] " .. entry.itemLink .. " -> " .. entry.verdict
+	if table.getn(entry.claimants) > 0 then
+		local parts = {}
+		for i = 1, table.getn(entry.claimants) do
+			local c = entry.claimants[i]
+			table.insert(parts, c.name .. "(#" .. c.col .. ")")
+		end
+		msg = msg .. " | Wishlisted by: " .. table.concat(parts, ", ")
+	end
+
+	if (GetNumRaidMembers() or 0) > 0 then
+		SendChatMessage(msg, "RAID")
+	else
+		Print(msg)
+	end
+end
+
+-- Broadcast all current loot entries.
+function CopeLoot:BroadcastAllLoot()
+	for i = 1, table.getn(detectedLoot) do
+		CopeLoot:BroadcastLootEntry(i)
+	end
+end
+
+-- ---------------------------------------------------------------------------
 -- Constants / layout metrics
 -- ---------------------------------------------------------------------------
 local WINDOW_W       = 600
@@ -204,7 +373,7 @@ local NAME_COL_W     = 110
 local WISH_COL_W     = 135
 
 -- Active state
-local activeTab    = "wishlist"   -- "wishlist" | "settings"
+local activeTab    = "wishlist"   -- "wishlist" | "loot" | "settings"
 local activeFilter = "all"       -- "all" | "raid"
 local scrollOffset = 0
 
@@ -255,7 +424,7 @@ end
 -- ---------------------------------------------------------------------------
 -- Tabs
 -- ---------------------------------------------------------------------------
-local tabWishlist, tabSettings
+local tabWishlist, tabLoot, tabSettings
 
 local function SetActiveTab(tab)
 	activeTab = tab
@@ -283,11 +452,31 @@ local function CreateTabs()
 
 	tabWishlist:SetScript("OnClick", function() SetActiveTab("wishlist") end)
 
+	-- Loot tab
+	tabLoot = CreateFrame("Button", "CopeLootTabLoot", mainFrame)
+	tabLoot:SetWidth(TAB_WIDTH)
+	tabLoot:SetHeight(TAB_HEIGHT)
+	tabLoot:SetPoint("LEFT", tabWishlist, "RIGHT", 4, 0)
+	tabLoot:SetBackdrop({
+		bgFile   = "Interface\\Buttons\\WHITE8X8",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		tile     = true, tileSize = 8, edgeSize = 12,
+		insets   = { left = 2, right = 2, top = 2, bottom = 2 },
+	})
+	tabLoot:SetBackdropColor(0.3, 0.3, 0.3, 1)
+
+	local tlText = tabLoot:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	tlText:SetPoint("CENTER", tabLoot, "CENTER", 0, 0)
+	tlText:SetText("Loot")
+	tabLoot.text = tlText
+
+	tabLoot:SetScript("OnClick", function() SetActiveTab("loot") end)
+
 	-- Settings tab
 	tabSettings = CreateFrame("Button", "CopeLootTabSettings", mainFrame)
 	tabSettings:SetWidth(TAB_WIDTH)
 	tabSettings:SetHeight(TAB_HEIGHT)
-	tabSettings:SetPoint("LEFT", tabWishlist, "RIGHT", 4, 0)
+	tabSettings:SetPoint("LEFT", tabLoot, "RIGHT", 4, 0)
 	tabSettings:SetBackdrop({
 		bgFile   = "Interface\\Buttons\\WHITE8X8",
 		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
@@ -533,9 +722,9 @@ local function CreateSettingsFrame()
 
 	settingsFrame.autoSwapCB = cb
 
-	-- Info text
+	-- Info text for auto-swap
 	local info = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	info:SetPoint("TOPLEFT", cb, "BOTTOMLEFT", 0, -16)
+	info:SetPoint("TOPLEFT", cb, "BOTTOMLEFT", 0, -8)
 	info:SetWidth(WINDOW_W - 60)
 	info:SetJustifyH("LEFT")
 	info:SetText(
@@ -543,6 +732,148 @@ local function CreateSettingsFrame()
 		"\"Current Raid\" when you join a raid group, and back to " ..
 		"\"All Wishlist\" when you leave the raid."
 	)
+
+	-- Auto-broadcast checkbox
+	local cb2 = CreateFrame("CheckButton", "CopeLootAutoBroadcastCB", settingsFrame, "UICheckButtonTemplate")
+	cb2:SetWidth(24)
+	cb2:SetHeight(24)
+	cb2:SetPoint("TOPLEFT", info, "BOTTOMLEFT", 0, -16)
+	cb2:SetChecked(false) -- refreshed from DB
+
+	local cb2Label = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	cb2Label:SetPoint("LEFT", cb2, "RIGHT", 4, 0)
+	cb2Label:SetText("Automatically broadcast loot info to raid chat")
+
+	cb2:SetScript("OnClick", function()
+		local db = EnsureDB()
+		if this:GetChecked() then
+			db.autoBroadcast = true
+		else
+			db.autoBroadcast = false
+		end
+	end)
+
+	settingsFrame.autoBroadcastCB = cb2
+
+	-- Info text for auto-broadcast
+	local info2 = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	info2:SetPoint("TOPLEFT", cb2, "BOTTOMLEFT", 0, -8)
+	info2:SetWidth(WINDOW_W - 60)
+	info2:SetJustifyH("LEFT")
+	info2:SetText(
+		"When enabled, CopeLoot automatically sends the wishlist verdict " ..
+		"to raid chat whenever the raid leader links an epic item in /say."
+	)
+end
+
+-- ---------------------------------------------------------------------------
+-- Loot tab content
+-- ---------------------------------------------------------------------------
+local lootFrame
+local lootRowFrames = {}
+local LOOT_VISIBLE = 5  -- max loot entries visible at once
+local lootScrollBar
+
+local function CreateLootFrame()
+	lootFrame = CreateFrame("Frame", "CopeLootLootFrame", mainFrame)
+	lootFrame:SetWidth(CONTENT_W)
+	lootFrame:SetHeight(WINDOW_H - 100)
+	lootFrame:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", LEFT_MARGIN, -70)
+	lootFrame:Hide()
+
+	-- Loot header
+	local hdr = lootFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	hdr:SetPoint("TOPLEFT", lootFrame, "TOPLEFT", 4, -4)
+	hdr:SetText("Detected Epic Loot (from Raid Leader /say)")
+	hdr:SetTextColor(1, 0.82, 0)
+
+	-- Pre-create loot entry rows
+	for i = 1, LOOT_VISIBLE do
+		local row = CreateFrame("Frame", "CopeLootLootRow" .. i, lootFrame)
+		row:SetWidth(CONTENT_W - 10)
+		row:SetHeight(LOOT_ROW_HEIGHT)
+		row:SetPoint("TOPLEFT", lootFrame, "TOPLEFT", 4, -24 - (i - 1) * (LOOT_ROW_HEIGHT + 4))
+
+		-- Alternating background
+		local bg = row:CreateTexture(nil, "BACKGROUND")
+		bg:SetAllPoints(row)
+		if math.mod(i, 2) == 0 then
+			bg:SetTexture(1, 1, 1, 0.05)
+		else
+			bg:SetTexture(0.5, 0.5, 0.5, 0.08)
+		end
+
+		-- Item name line
+		local itemFS = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+		itemFS:SetPoint("TOPLEFT", row, "TOPLEFT", 2, -2)
+		itemFS:SetWidth(CONTENT_W - 14)
+		itemFS:SetJustifyH("LEFT")
+
+		-- Claimants line
+		local claimFS = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		claimFS:SetPoint("TOPLEFT", itemFS, "BOTTOMLEFT", 0, -2)
+		claimFS:SetWidth(CONTENT_W - 14)
+		claimFS:SetJustifyH("LEFT")
+
+		-- Verdict line
+		local verdictFS = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+		verdictFS:SetPoint("TOPLEFT", claimFS, "BOTTOMLEFT", 0, -2)
+		verdictFS:SetWidth(CONTENT_W - 14)
+		verdictFS:SetJustifyH("LEFT")
+
+		row.itemFS    = itemFS
+		row.claimFS   = claimFS
+		row.verdictFS = verdictFS
+
+		lootRowFrames[i] = row
+	end
+
+	-- Loot scrollbar
+	lootScrollBar = CreateFrame("Slider", "CopeLootLootScrollBar", lootFrame)
+	lootScrollBar:SetWidth(SCROLL_W)
+	lootScrollBar:SetPoint("TOPRIGHT", lootFrame, "TOPRIGHT", 0, -24)
+	lootScrollBar:SetPoint("BOTTOMRIGHT", lootFrame, "BOTTOMRIGHT", 0, 30)
+	lootScrollBar:SetOrientation("VERTICAL")
+	lootScrollBar:SetBackdrop({
+		bgFile   = "Interface\\Buttons\\UI-SliderBar-Background",
+		edgeFile = "Interface\\Buttons\\UI-SliderBar-Border",
+		tile     = true, tileSize = 8, edgeSize = 8,
+		insets   = { left = 3, right = 3, top = 6, bottom = 6 },
+	})
+	local lThumb = lootScrollBar:CreateTexture(nil, "OVERLAY")
+	lThumb:SetTexture("Interface\\Buttons\\UI-ScrollBar-Knob")
+	lThumb:SetWidth(SCROLL_W)
+	lThumb:SetHeight(SCROLL_W)
+	lootScrollBar:SetThumbTexture(lThumb)
+	lootScrollBar:SetScript("OnValueChanged", function()
+		scrollOffset = math.floor(this:GetValue())
+		CopeLoot:RefreshUI()
+	end)
+	lootScrollBar:SetMinMaxValues(0, 0)
+	lootScrollBar:SetValueStep(1)
+	lootScrollBar:SetValue(0)
+
+	-- Broadcast All button
+	local broadcastBtn = CreateFrame("Button", "CopeLootBroadcastBtn", lootFrame, "UIPanelButtonTemplate")
+	broadcastBtn:SetWidth(120)
+	broadcastBtn:SetHeight(22)
+	broadcastBtn:SetPoint("BOTTOMLEFT", lootFrame, "BOTTOMLEFT", 4, 4)
+	broadcastBtn:SetText("Broadcast All")
+	broadcastBtn:SetScript("OnClick", function()
+		CopeLoot:BroadcastAllLoot()
+	end)
+
+	-- Clear button
+	local clearBtn = CreateFrame("Button", "CopeLootClearLootBtn", lootFrame, "UIPanelButtonTemplate")
+	clearBtn:SetWidth(80)
+	clearBtn:SetHeight(22)
+	clearBtn:SetPoint("LEFT", broadcastBtn, "RIGHT", 8, 0)
+	clearBtn:SetText("Clear")
+	clearBtn:SetScript("OnClick", function()
+		detectedLoot = {}
+		scrollOffset = 0
+		CopeLoot:RefreshUI()
+	end)
 end
 
 -- ---------------------------------------------------------------------------
@@ -554,37 +885,98 @@ function CopeLoot:RefreshUI()
 
 	local db = EnsureDB()
 
-	-- Tab highlight
-	if activeTab == "wishlist" then
-		tabWishlist:SetBackdropColor(0.2, 0.6, 0.2, 1)
-		tabSettings:SetBackdropColor(0.3, 0.3, 0.3, 1)
-	else
-		tabWishlist:SetBackdropColor(0.3, 0.3, 0.3, 1)
-		tabSettings:SetBackdropColor(0.2, 0.6, 0.2, 1)
+	-- Tab highlight (active = green, inactive = grey)
+	local function HighlightTab(tab, isActive)
+		if isActive then
+			tab:SetBackdropColor(0.2, 0.6, 0.2, 1)
+		else
+			tab:SetBackdropColor(0.3, 0.3, 0.3, 1)
+		end
+	end
+	HighlightTab(tabWishlist, activeTab == "wishlist")
+	HighlightTab(tabLoot,     activeTab == "loot")
+	HighlightTab(tabSettings, activeTab == "settings")
+
+	-- Hide all panes first
+	filterAllBtn:Hide()
+	filterRaidBtn:Hide()
+	headerFrame:Hide()
+	scrollBar:Hide()
+	settingsFrame:Hide()
+	lootFrame:Hide()
+	for i = 1, VISIBLE_ROWS do
+		rowFrames[i]:Hide()
 	end
 
-	-- Show/hide panes
-	local showWishlist = (activeTab == "wishlist")
-	if showWishlist then
-		filterAllBtn:Show()
-		filterRaidBtn:Show()
-		headerFrame:Show()
-		scrollBar:Show()
-		settingsFrame:Hide()
-		for i = 1, VISIBLE_ROWS do
-			rowFrames[i]:Show()
-		end
-	else
-		filterAllBtn:Hide()
-		filterRaidBtn:Hide()
-		headerFrame:Hide()
-		scrollBar:Hide()
-		for i = 1, VISIBLE_ROWS do
-			rowFrames[i]:Hide()
-		end
+	-- --- Settings tab ---
+	if activeTab == "settings" then
 		settingsFrame:Show()
 		settingsFrame.autoSwapCB:SetChecked(db.autoSwap)
+		settingsFrame.autoBroadcastCB:SetChecked(db.autoBroadcast)
 		return
+	end
+
+	-- --- Loot tab ---
+	if activeTab == "loot" then
+		lootFrame:Show()
+		local total = table.getn(detectedLoot)
+		local maxScroll = total - LOOT_VISIBLE
+		if maxScroll < 0 then maxScroll = 0 end
+		lootScrollBar:SetMinMaxValues(0, maxScroll)
+		if scrollOffset > maxScroll then scrollOffset = maxScroll end
+
+		for i = 1, LOOT_VISIBLE do
+			local dataIdx = i + scrollOffset
+			local row = lootRowFrames[i]
+			if dataIdx <= total then
+				local entry = detectedLoot[dataIdx]
+				row.itemFS:SetText(entry.itemLink or entry.itemName)
+				row.itemFS:SetTextColor(0.63, 0.21, 0.93) -- epic purple
+
+				-- Build claimants string
+				if table.getn(entry.claimants) > 0 then
+					local parts = {}
+					for j = 1, table.getn(entry.claimants) do
+						local c = entry.claimants[j]
+						table.insert(parts, c.name .. " (#" .. c.col .. ")")
+					end
+					row.claimFS:SetText("Wishlisted (in raid): " .. table.concat(parts, ", "))
+					row.claimFS:SetTextColor(0.8, 0.8, 0.8)
+				else
+					row.claimFS:SetText("No raid members have this wishlisted")
+					row.claimFS:SetTextColor(0.5, 0.5, 0.5)
+				end
+
+				-- Verdict with color
+				local verdict = entry.verdict
+				if string.find(verdict, "^TIE") then
+					row.verdictFS:SetText("-> " .. verdict)
+					row.verdictFS:SetTextColor(1, 1, 0.3) -- yellow for tie
+				elseif string.find(verdict, "No wishlist") then
+					row.verdictFS:SetText("-> " .. verdict)
+					row.verdictFS:SetTextColor(0.5, 0.5, 0.5) -- grey
+				else
+					row.verdictFS:SetText("-> Award to: " .. verdict)
+					row.verdictFS:SetTextColor(0.3, 1, 0.3) -- green for clear winner
+				end
+				row:Show()
+			else
+				row.itemFS:SetText("")
+				row.claimFS:SetText("")
+				row.verdictFS:SetText("")
+				row:Show()
+			end
+		end
+		return
+	end
+
+	-- --- Wishlist tab ---
+	filterAllBtn:Show()
+	filterRaidBtn:Show()
+	headerFrame:Show()
+	scrollBar:Show()
+	for i = 1, VISIBLE_ROWS do
+		rowFrames[i]:Show()
 	end
 
 	-- Filter button highlight
@@ -656,6 +1048,7 @@ function CopeLoot:Toggle()
 		CreateHeaderAndRows()
 		CreateScrollBar()
 		CreateSettingsFrame()
+		CreateLootFrame()
 		IndexPlayerData()
 	end
 
@@ -716,6 +1109,7 @@ eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_LOGIN")
 eventFrame:RegisterEvent("RAID_ROSTER_UPDATE")
 eventFrame:RegisterEvent("PARTY_MEMBERS_CHANGED")
+eventFrame:RegisterEvent("CHAT_MSG_SAY")
 
 eventFrame:SetScript("OnEvent", function()
 	if event == "ADDON_LOADED" and arg1 == "CopeLoot" then
@@ -725,5 +1119,8 @@ eventFrame:SetScript("OnEvent", function()
 		Print(CopeLoot.version .. " loaded. Type /copeloot to open.")
 	elseif event == "RAID_ROSTER_UPDATE" or event == "PARTY_MEMBERS_CHANGED" then
 		CheckAutoSwap()
+	elseif event == "CHAT_MSG_SAY" then
+		-- arg1 = message, arg2 = sender name
+		CopeLoot:OnChatMsg(arg2, arg1)
 	end
 end)

@@ -23,7 +23,7 @@ for _, m in ipairs({
   "SetJustifyH","SetJustifyV","SetFont","SetFontObject","SetTexture","SetTexCoord",
   "SetVertexColor","SetAlpha","SetChecked","GetChecked",
   "SetMinMaxValues","GetMinMaxValues","SetValue","GetValue","SetValueStep",
-  "SetOrientation","SetThumbTexture","GetThumbTexture",
+  "SetOrientation","SetThumbTexture","GetThumbTexture","SetText","GetText",
 }) do VALID_WIDGET_METHODS[m] = true end
 
 -- Methods that exist ONLY on ScrollFrame. Calling them on any other widget
@@ -104,6 +104,12 @@ UIParent = widget("Frame", "UIParent")
 -- Raid state, controllable by the test
 _numRaid = 0
 function GetNumRaidMembers() return _numRaid end
+function GetRaidRosterInfo(i)
+  if i == 1 then return "Lokiy", 2, 1, 60, "Priest", "PRIEST", "", true, false end
+  if i == 2 then return "Gnomosek", 0, 1, 60, "Mage", "MAGE", "", true, false end
+  return nil
+end
+function SendChatMessage(msg, channel) print("SEND["..channel.."]: "..msg) end
 function UnitName(unit)
   if unit == "player" then return "Lokiy" end
   local i = string.match(unit or "", "^raid(%d+)$")
