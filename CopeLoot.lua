@@ -223,7 +223,10 @@ end
 -- Resolve who should get a detected item.
 -- Returns an ordered list of { name, col } sorted by priority column,
 -- and a verdict string.
-local function ResolveLoot(itemName)
+-- Resolve who should get a detected item.
+-- Accepts count to denote duplicate drops (e.g., 2x Item).
+local function ResolveLoot(itemName, count)
+	count = count or 1
 	local key = NormaliseItemName(itemName)
 	if key == "" then return {}, "No item" end
 
@@ -249,7 +252,8 @@ local function ResolveLoot(itemName)
 	end
 
 	if table.getn(claimants) == 0 then
-		return {}, "No wishlist match in raid"
+		local qtyPrefix = count > 1 and ("(" .. count .. "x) ") or ""
+		return {}, qtyPrefix .. "No wishlist match in raid"
 	end
 
 	-- Sort by priority column (ascending = higher priority first)
@@ -263,58 +267,81 @@ local function ResolveLoot(itemName)
 		end
 	end
 
+	local countStr = count > 1 and ("(" .. count .. "x Drop) ") or ""
 	local verdict
-	if table.getn(winners) == 1 then
-		verdict = winners[1] .. " (priority #" .. bestCol .. ")"
+	if table.getn(winners) <= count then
+		-- Enough drops for all top-priority claimants
+		verdict = countStr .. table.concat(winners, ", ") .. " (priority #" .. bestCol .. ")"
 	else
-		verdict = "TIE #" .. bestCol .. ": " .. table.concat(winners, ", ")
+		-- More claimants than available drops at this priority level
+		verdict = countStr .. "TIE #" .. bestCol .. " (" .. count .. " drop" .. (count > 1 and "s" or "") .. "): " .. table.concat(winners, ", ")
 	end
 
 	return claimants, verdict
 end
 
 -- Process a chat message: if it contains an epic item link, record it.
+-- Process a chat message: if it contains epic item links, record each drop.
 function CopeLoot:OnChatMsg(sender, message)
 	-- Only process from the raid leader
 	local leader = GetRaidLeaderName()
 	if not leader or sender ~= leader then return end
 
-	-- Find all epic (purple, quality 4) item links in the message.
-	-- Epic links use color code |cffa335ee in 1.12.1.
+	-- Find all epic (quality 4: |cffa335ee) item links in the message
 	local pos = 1
+	local foundLinks = {}
+
 	while true do
 		local s, e, itemLink = string.find(message,
 			"(|cffa335ee|Hitem:%d+:%d+:%d+:%d+|h%[.-%]|h|r)", pos)
 		if not s then break end
 		pos = e + 1
 
-		-- Extract item name from the link
 		local _, _, itemName = string.find(itemLink, "%[(.-)%]")
 		if itemName then
-			local claimants, verdict = ResolveLoot(itemName)
-
-			table.insert(detectedLoot, {
-				itemLink  = itemLink,
-				itemName  = itemName,
-				claimants = claimants,
-				verdict   = verdict,
-			})
-
-			Print("Detected: " .. itemLink .. " -> " .. verdict)
-
-			-- Auto-broadcast if enabled
-			local db = EnsureDB()
-			if db.autoBroadcast then
-				CopeLoot:BroadcastLootEntry(table.getn(detectedLoot))
+			-- Check for quantity prefix/suffix near the link like "2x [Item]" or "[Item] x2"
+			local prefix = string.sub(message, math.max(1, s - 5), s - 1)
+			local suffix = string.sub(message, e + 1, e + 5)
+			
+			local count = 1
+			local _, _, pQty = string.find(prefix, "(%d+)%s*x%s*$")
+			local _, _, sQty = string.find(suffix, "^%s*x%s*(%d+)")
+			
+			if pQty then count = tonumber(pQty) or 1
+			elseif sQty then count = tonumber(sQty) or 1
 			end
 
-			-- Switch to loot tab if window is open
-			if mainFrame and mainFrame:IsShown() then
-				activeTab = "loot"
-				scrollOffset = 0
-				CopeLoot:RefreshUI()
-			end
+			table.insert(foundLinks, { itemLink = itemLink, itemName = itemName, count = count })
 		end
+	end
+
+	-- Process all detected items (including duplicate links in the same chat line)
+	for i = 1, table.getn(foundLinks) do
+		local item = foundLinks[i]
+		local claimants, verdict = ResolveLoot(item.itemName, item.count)
+
+		table.insert(detectedLoot, {
+			itemLink  = item.itemLink,
+			itemName  = item.itemName,
+			count     = item.count,
+			claimants = claimants,
+			verdict   = verdict,
+		})
+
+		Print("Detected: " .. item.itemLink .. (item.count > 1 and (" x" .. item.count) or "") .. " -> " .. verdict)
+
+		-- Auto-broadcast if enabled
+		local db = EnsureDB()
+		if db.autoBroadcast then
+			CopeLoot:BroadcastLootEntry(table.getn(detectedLoot))
+		end
+	end
+
+	-- Switch to loot tab if window is open and new loot was found
+	if table.getn(foundLinks) > 0 and mainFrame and mainFrame:IsShown() then
+		activeTab = "loot"
+		scrollOffset = 0
+		CopeLoot:RefreshUI()
 	end
 end
 
@@ -933,8 +960,10 @@ function CopeLoot:RefreshUI()
 			local row = lootRowFrames[i]
 			if dataIdx <= total then
 				local entry = detectedLoot[dataIdx]
-				row.itemFS:SetText(entry.itemLink or entry.itemName)
-				row.itemFS:SetTextColor(0.63, 0.21, 0.93) -- epic purple
+
+				local qtyText = (entry.count and entry.count > 1) and (" (" .. entry.count .. "x)") or ""
+    			row.itemFS:SetText((entry.itemLink or entry.itemName) .. qtyText)
+    			row.itemFS:SetTextColor(0.63, 0.21, 0.93)
 
 				-- Build claimants string
 				if table.getn(entry.claimants) > 0 then
