@@ -318,25 +318,28 @@ function CopeLoot:OnChatMsg(sender, message)
 	end
 end
 
--- Broadcast a single loot entry to raid chat.
+-- Broadcast a single loot entry to raid chat preserving clickable links.
 function CopeLoot:BroadcastLootEntry(index)
 	local entry = detectedLoot[index]
 	if not entry then return end
 
-	local msg = "[CopeLoot] " .. entry.itemLink .. " -> " .. entry.verdict
-	if table.getn(entry.claimants) > 0 then
-		local parts = {}
-		for i = 1, table.getn(entry.claimants) do
-			local c = entry.claimants[i]
-			table.insert(parts, c.name .. "(#" .. c.col .. ")")
-		end
-		msg = msg .. " | Wishlisted by: " .. table.concat(parts, ", ")
-	end
-
 	if (GetNumRaidMembers() or 0) > 0 then
-		SendChatMessage(msg, "RAID")
+		-- Send the clickable link line
+		SendChatMessage("[CopeLoot] " .. entry.itemLink, "RAID")
+		
+		-- Send details on a separate line
+		local detailMsg = "-> " .. entry.verdict
+		if table.getn(entry.claimants) > 0 then
+			local parts = {}
+			for i = 1, table.getn(entry.claimants) do
+				local c = entry.claimants[i]
+				table.insert(parts, c.name .. " (#" .. c.col .. ")")
+			end
+			detailMsg = detailMsg .. " - Wishlisted: " .. table.concat(parts, ", ")
+		end
+		SendChatMessage(detailMsg, "RAID")
 	else
-		Print(msg)
+		Print("[CopeLoot] " .. entry.itemLink .. " -> " .. entry.verdict)
 	end
 end
 
