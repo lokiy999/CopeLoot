@@ -147,10 +147,10 @@ local function CreateMainFrame()
 	-- Title
 	local title = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
 	title:SetPoint("TOP", mainFrame, "TOP", 0, -16)
-	title:SetText("CopeLoot – Cope Guild Wishlists")
+	title:SetText("CopeLoot - Cope Guild Wishlists")
 
 	-- Close button
-	local closeBtn = CreateFrame("Button", nil, mainFrame, "UIPanelCloseButton")
+	local closeBtn = CreateFrame("Button", "CopeLootCloseButton", mainFrame, "UIPanelCloseButton")
 	closeBtn:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -5, -5)
 
 	return mainFrame
@@ -181,7 +181,7 @@ local function CreateTabs()
 	tabWishlist:SetBackdropColor(0.2, 0.6, 0.2, 1)
 
 	local twText = tabWishlist:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	twText:SetPoint("CENTER")
+	twText:SetPoint("CENTER", tabWishlist, "CENTER", 0, 0)
 	twText:SetText("Wishlist")
 	tabWishlist.text = twText
 
@@ -201,7 +201,7 @@ local function CreateTabs()
 	tabSettings:SetBackdropColor(0.3, 0.3, 0.3, 1)
 
 	local tsText = tabSettings:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	tsText:SetPoint("CENTER")
+	tsText:SetPoint("CENTER", tabSettings, "CENTER", 0, 0)
 	tsText:SetText("Settings")
 	tabSettings.text = tsText
 
@@ -209,7 +209,7 @@ local function CreateTabs()
 end
 
 -- ---------------------------------------------------------------------------
--- Wishlist tab – filter bar
+-- Wishlist tab - filter bar
 -- ---------------------------------------------------------------------------
 local filterAllBtn, filterRaidBtn
 
@@ -232,7 +232,7 @@ local function CreateFilterBar()
 	})
 
 	local faText = filterAllBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	faText:SetPoint("CENTER")
+	faText:SetPoint("CENTER", filterAllBtn, "CENTER", 0, 0)
 	faText:SetText("All Wishlist")
 	filterAllBtn.text = faText
 
@@ -250,7 +250,7 @@ local function CreateFilterBar()
 	})
 
 	local frText = filterRaidBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	frText:SetPoint("CENTER")
+	frText:SetPoint("CENTER", filterRaidBtn, "CENTER", 0, 0)
 	frText:SetText("Current Raid")
 	filterRaidBtn.text = frText
 
@@ -258,14 +258,14 @@ local function CreateFilterBar()
 end
 
 -- ---------------------------------------------------------------------------
--- Wishlist tab – column headers + data rows
+-- Wishlist tab - column headers + data rows
 -- ---------------------------------------------------------------------------
 local headerFrame
 local rowFrames = {}
 
 local function CreateHeaderAndRows()
 	-- Column header bar
-	headerFrame = CreateFrame("Frame", nil, mainFrame)
+	headerFrame = CreateFrame("Frame", "CopeLootHeaderFrame", mainFrame)
 	headerFrame:SetWidth(WINDOW_W - 40)
 	headerFrame:SetHeight(HEADER_HEIGHT)
 	headerFrame:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 20, -96)
