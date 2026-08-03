@@ -1112,7 +1112,8 @@ eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_LOGIN")
 eventFrame:RegisterEvent("RAID_ROSTER_UPDATE")
 eventFrame:RegisterEvent("PARTY_MEMBERS_CHANGED")
-eventFrame:RegisterEvent("CHAT_MSG_SAY")
+eventFrame:RegisterEvent("CHAT_MSG_RAID")
+eventFrame:RegisterEvent("CHAT_MSG_RAID_LEADER")
 
 eventFrame:SetScript("OnEvent", function()
 	if event == "ADDON_LOADED" and arg1 == "CopeLoot" then
@@ -1122,7 +1123,7 @@ eventFrame:SetScript("OnEvent", function()
 		Print(CopeLoot.version .. " loaded. Type /copeloot to open.")
 	elseif event == "RAID_ROSTER_UPDATE" or event == "PARTY_MEMBERS_CHANGED" then
 		CheckAutoSwap()
-	elseif event == "CHAT_MSG_SAY" then
+	elseif event == "CHAT_MSG_RAID" or event == "CHAT_MSG_RAID_LEADER" then
 		-- arg1 = message, arg2 = sender name
 		CopeLoot:OnChatMsg(arg2, arg1)
 	end
