@@ -74,8 +74,14 @@ end
 local itemIndex = {}
 
 local function NormaliseItemName(raw)
-	-- Strip parenthetical notes like "(Questhero)" or "(Ronald)" so that
-	-- "Maladath (Ronald)" and "Maladath" are treated as the same item.
+	-- Parenthetical notes like "(Questhero)" or "(Ronald)" denote ALT
+	-- characters.  They are kept in the display text but stripped here so
+	-- "Maladath (Ronald)" and "Maladath" contest the same slot.
+	--
+	-- Square brackets like "[Fists]" or "[1h Mace]" denote different stat
+	-- rolls of the same base item and are KEPT so that e.g.
+	-- "Ring of Master [Fists]" and "Ring of Master [1h Mace]" are treated
+	-- as separate items.
 	if not raw or raw == "" then return "" end
 	local name = string.gsub(raw, "%s*%(.-%)%s*$", "")
 	-- Strip trailing whitespace
