@@ -10,7 +10,7 @@
 CopeLoot_PlayerData = {
 	{
 		name  = "Lokiy",
-		class = "Hunter",
+		class = "Priest",
 		wish1 = "Neltharion's Tear",
 		wish1_id = 19379,
 		wish2 = "Ancient Petrified Leaf",

@@ -57,4 +57,45 @@ print("== autoSwap disabled, DB =", g.CopeLootDB.autoSwap, "==")
 g.SlashCmdList["COPELOOT"]("")   # close
 g.SlashCmdList["COPELOOT"]("")   # open
 print("== slash command OK ==")
-print("\nALL RUNTIME CHECKS PASSED")
+
+# --- Layout assertions: content must not run underneath the scrollbar ---
+import re
+src = io.open(base + "CopeLoot.lua", encoding="utf-8").read()
+
+def const(n):
+    m = re.search(r"local\s+" + n + r"\s*=\s*(-?\d+)", src)
+    assert m, "constant not found: " + n
+    return int(m.group(1))
+
+WINDOW_W      = const("WINDOW_W")
+LEFT_MARGIN   = const("LEFT_MARGIN")
+SCROLL_W      = const("SCROLL_W")
+SCROLL_INSET  = const("SCROLL_INSET")
+SCROLL_GUTTER = const("SCROLL_GUTTER")
+NAME_COL_W    = const("NAME_COL_W")
+WISH_COL_W    = const("WISH_COL_W")
+CONTENT_W     = WINDOW_W - LEFT_MARGIN * 2 - SCROLL_GUTTER
+
+content_right  = LEFT_MARGIN + CONTENT_W
+scrollbar_left = WINDOW_W - SCROLL_INSET - SCROLL_W
+assert content_right <= scrollbar_left, \
+    "Content right edge %d overlaps scrollbar left edge %d" % (content_right, scrollbar_left)
+print("== layout OK: content right=%d, scrollbar left=%d, gap=%dpx ==" %
+      (content_right, scrollbar_left, scrollbar_left - content_right))
+
+last_col_right = NAME_COL_W + 3 * WISH_COL_W + 12
+assert last_col_right <= CONTENT_W, \
+    "Column #3 right edge %d exceeds content width %d" % (last_col_right, CONTENT_W)
+print("== columns OK: #3 right=%d <= content width=%d ==" % (last_col_right, CONTENT_W))
+
+# --- Data assertions ---
+p1 = g.CopeLoot_PlayerData[1]
+assert p1["name"] == "Lokiy", p1["name"]
+assert p1["class"] == "Priest", "expected Priest, got " + str(p1["class"])
+assert p1["wish1"] == "Neltharion's Tear"
+assert p1["wish2"] == "Ancient Petrified Leaf"
+assert p1["wish3"] == ""
+print("== data OK: Lokiy is a %s ==" % p1["class"])
+
+print("")
+print("ALL RUNTIME CHECKS PASSED")

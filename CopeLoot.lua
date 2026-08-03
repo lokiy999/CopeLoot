@@ -101,11 +101,23 @@ local WINDOW_W       = 600
 local WINDOW_H       = 400
 local ROW_HEIGHT     = 20
 local HEADER_HEIGHT  = 24
-local NAME_COL_W     = 130
-local WISH_COL_W     = 150
 local TAB_HEIGHT     = 24
 local TAB_WIDTH      = 100
 local VISIBLE_ROWS   = 14
+
+-- Scrollbar geometry. The content area is inset by SCROLL_GUTTER on the right
+-- so rows/headers never run underneath the scrollbar.
+local LEFT_MARGIN    = 20
+local SCROLL_W       = 16
+local SCROLL_INSET   = 28   -- distance from window right edge to scrollbar right edge
+local SCROLL_GUTTER  = 30   -- reserved width: scrollbar + breathing room
+
+-- Usable width for headers and rows (stops short of the scrollbar)
+local CONTENT_W      = WINDOW_W - LEFT_MARGIN * 2 - SCROLL_GUTTER
+
+-- Column widths must satisfy: NAME_COL_W + 3*WISH_COL_W + 12 <= CONTENT_W
+local NAME_COL_W     = 110
+local WISH_COL_W     = 135
 
 -- Active state
 local activeTab    = "wishlist"   -- "wishlist" | "settings"
@@ -266,9 +278,9 @@ local rowFrames = {}
 local function CreateHeaderAndRows()
 	-- Column header bar
 	headerFrame = CreateFrame("Frame", "CopeLootHeaderFrame", mainFrame)
-	headerFrame:SetWidth(WINDOW_W - 40)
+	headerFrame:SetWidth(CONTENT_W)
 	headerFrame:SetHeight(HEADER_HEIGHT)
-	headerFrame:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 20, -96)
+	headerFrame:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", LEFT_MARGIN, -96)
 
 	local hPlayer = headerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 	hPlayer:SetPoint("LEFT", headerFrame, "LEFT", 4, 0)
@@ -301,14 +313,14 @@ local function CreateHeaderAndRows()
 	-- Separator line
 	local sep = headerFrame:CreateTexture(nil, "ARTWORK")
 	sep:SetTexture(1, 0.82, 0, 0.5)
-	sep:SetWidth(WINDOW_W - 44)
+	sep:SetWidth(CONTENT_W)
 	sep:SetHeight(1)
 	sep:SetPoint("BOTTOMLEFT", headerFrame, "BOTTOMLEFT", 0, 0)
 
 	-- Pre-create row frames
 	for i = 1, VISIBLE_ROWS do
 		local row = CreateFrame("Frame", "CopeLootRow" .. i, mainFrame)
-		row:SetWidth(WINDOW_W - 40)
+		row:SetWidth(CONTENT_W)
 		row:SetHeight(ROW_HEIGHT)
 		row:SetPoint("TOPLEFT", headerFrame, "BOTTOMLEFT", 0, -(i - 1) * ROW_HEIGHT - 2)
 
@@ -356,18 +368,43 @@ end
 local scrollBar
 
 local function CreateScrollBar()
-	scrollBar = CreateFrame("Slider", "CopeLootScrollBar", mainFrame, "UIPanelScrollBarTemplate")
-	scrollBar:SetWidth(16)
-	scrollBar:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -28, -122)
-	scrollBar:SetPoint("BOTTOMRIGHT", mainFrame, "BOTTOMRIGHT", -28, 20)
-	scrollBar:SetMinMaxValues(0, 1)
-	scrollBar:SetValueStep(1)
-	scrollBar:SetValue(0)
+	-- NOTE: Do NOT use "UIPanelScrollBarTemplate" here. In 1.12.1 that template
+	-- ships an XML OnValueChanged handler that calls
+	--     this:GetParent():SetVerticalScroll(value)
+	-- which only exists on a ScrollFrame. Our parent is a plain Frame, so it
+	-- errors with "attempt to call method 'SetVerticalScroll' (a nil value)".
+	-- We build a bare Slider and supply our own artwork/handler instead.
+	scrollBar = CreateFrame("Slider", "CopeLootScrollBar", mainFrame)
+	scrollBar:SetWidth(SCROLL_W)
+	scrollBar:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -SCROLL_INSET, -122)
+	scrollBar:SetPoint("BOTTOMRIGHT", mainFrame, "BOTTOMRIGHT", -SCROLL_INSET, 20)
+	scrollBar:SetOrientation("VERTICAL")
 
+	-- Track background
+	scrollBar:SetBackdrop({
+		bgFile   = "Interface\\Buttons\\UI-SliderBar-Background",
+		edgeFile = "Interface\\Buttons\\UI-SliderBar-Border",
+		tile     = true, tileSize = 8, edgeSize = 8,
+		insets   = { left = 3, right = 3, top = 6, bottom = 6 },
+	})
+
+	-- Thumb
+	local thumb = scrollBar:CreateTexture(nil, "OVERLAY")
+	thumb:SetTexture("Interface\\Buttons\\UI-ScrollBar-Knob")
+	thumb:SetWidth(SCROLL_W)
+	thumb:SetHeight(SCROLL_W)
+	scrollBar:SetThumbTexture(thumb)
+
+	-- IMPORTANT: register the handler BEFORE the first SetValue, otherwise the
+	-- initial SetValue fires whatever handler is currently attached.
 	scrollBar:SetScript("OnValueChanged", function()
 		scrollOffset = math.floor(this:GetValue())
 		CopeLoot:RefreshUI()
 	end)
+
+	scrollBar:SetMinMaxValues(0, 0)
+	scrollBar:SetValueStep(1)
+	scrollBar:SetValue(0)
 
 	-- Mouse-wheel on main frame
 	mainFrame:EnableMouseWheel(true)
