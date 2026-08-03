@@ -804,6 +804,14 @@ local lootRowFrames = {}
 local LOOT_VISIBLE = 5  -- max loot entries visible at once
 local lootScrollBar
 
+-- ---------------------------------------------------------------------------
+-- Loot tab content
+-- ---------------------------------------------------------------------------
+local lootFrame
+local lootRowFrames = {}
+local LOOT_VISIBLE = 4         -- Reduced to 4 so multi-line entries fit without hitting buttons
+local LOOT_ROW_SPACING = 68   -- Clean vertical spacing per entry
+
 local function CreateLootFrame()
 	lootFrame = CreateFrame("Frame", "CopeLootLootFrame", mainFrame)
 	lootFrame:SetWidth(CONTENT_W)
@@ -814,15 +822,15 @@ local function CreateLootFrame()
 	-- Loot header
 	local hdr = lootFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 	hdr:SetPoint("TOPLEFT", lootFrame, "TOPLEFT", 4, -4)
-	hdr:SetText("Detected Epic Loot (from Raid Leader /say)")
+	hdr:SetText("Detected Epic Loot (from Raid Chat)")
 	hdr:SetTextColor(1, 0.82, 0)
 
 	-- Pre-create loot entry rows
 	for i = 1, LOOT_VISIBLE do
 		local row = CreateFrame("Frame", "CopeLootLootRow" .. i, lootFrame)
-		row:SetWidth(CONTENT_W - 10)
-		row:SetHeight(LOOT_ROW_HEIGHT)
-		row:SetPoint("TOPLEFT", lootFrame, "TOPLEFT", 4, -24 - (i - 1) * (LOOT_ROW_HEIGHT + 4))
+		row:SetWidth(CONTENT_W - SCROLL_GUTTER)
+		row:SetHeight(60)
+		row:SetPoint("TOPLEFT", lootFrame, "TOPLEFT", 4, -24 - (i - 1) * LOOT_ROW_SPACING)
 
 		-- Alternating background
 		local bg = row:CreateTexture(nil, "BACKGROUND")
@@ -833,22 +841,22 @@ local function CreateLootFrame()
 			bg:SetTexture(0.5, 0.5, 0.5, 0.08)
 		end
 
-		-- Item name line
+		-- Line 1: Item Name
 		local itemFS = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-		itemFS:SetPoint("TOPLEFT", row, "TOPLEFT", 2, -2)
-		itemFS:SetWidth(CONTENT_W - 14)
+		itemFS:SetPoint("TOPLEFT", row, "TOPLEFT", 4, -2)
+		itemFS:SetWidth(CONTENT_W - SCROLL_GUTTER - 8)
 		itemFS:SetJustifyH("LEFT")
 
-		-- Claimants line
+		-- Line 2: Claimants / Wishlisted info
 		local claimFS = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 		claimFS:SetPoint("TOPLEFT", itemFS, "BOTTOMLEFT", 0, -2)
-		claimFS:SetWidth(CONTENT_W - 14)
+		claimFS:SetWidth(CONTENT_W - SCROLL_GUTTER - 8)
 		claimFS:SetJustifyH("LEFT")
 
-		-- Verdict line
+		-- Line 3: Verdict
 		local verdictFS = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 		verdictFS:SetPoint("TOPLEFT", claimFS, "BOTTOMLEFT", 0, -2)
-		verdictFS:SetWidth(CONTENT_W - 14)
+		verdictFS:SetWidth(CONTENT_W - SCROLL_GUTTER - 8)
 		verdictFS:SetJustifyH("LEFT")
 
 		row.itemFS    = itemFS
@@ -861,8 +869,8 @@ local function CreateLootFrame()
 	-- Loot scrollbar
 	lootScrollBar = CreateFrame("Slider", "CopeLootLootScrollBar", lootFrame)
 	lootScrollBar:SetWidth(SCROLL_W)
-	lootScrollBar:SetPoint("TOPRIGHT", lootFrame, "TOPRIGHT", 0, -24)
-	lootScrollBar:SetPoint("BOTTOMRIGHT", lootFrame, "BOTTOMRIGHT", 0, 30)
+	lootScrollBar:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -SCROLL_INSET, -96)
+	lootScrollBar:SetPoint("BOTTOMRIGHT", mainFrame, "BOTTOMRIGHT", -SCROLL_INSET, 50)
 	lootScrollBar:SetOrientation("VERTICAL")
 	lootScrollBar:SetBackdrop({
 		bgFile   = "Interface\\Buttons\\UI-SliderBar-Background",
@@ -875,6 +883,8 @@ local function CreateLootFrame()
 	lThumb:SetWidth(SCROLL_W)
 	lThumb:SetHeight(SCROLL_W)
 	lootScrollBar:SetThumbTexture(lThumb)
+
+	-- OnValueChanged handler for Loot Tab scrollbar
 	lootScrollBar:SetScript("OnValueChanged", function()
 		scrollOffset = math.floor(this:GetValue())
 		CopeLoot:RefreshUI()
@@ -883,11 +893,11 @@ local function CreateLootFrame()
 	lootScrollBar:SetValueStep(1)
 	lootScrollBar:SetValue(0)
 
-	-- Broadcast All button
+	-- Broadcast All button anchored cleanly at bottom
 	local broadcastBtn = CreateFrame("Button", "CopeLootBroadcastBtn", lootFrame, "UIPanelButtonTemplate")
 	broadcastBtn:SetWidth(120)
 	broadcastBtn:SetHeight(22)
-	broadcastBtn:SetPoint("BOTTOMLEFT", lootFrame, "BOTTOMLEFT", 4, 4)
+	broadcastBtn:SetPoint("BOTTOMLEFT", mainFrame, "BOTTOMLEFT", 20, 15)
 	broadcastBtn:SetText("Broadcast All")
 	broadcastBtn:SetScript("OnClick", function()
 		CopeLoot:BroadcastAllLoot()
@@ -952,18 +962,20 @@ function CopeLoot:RefreshUI()
 		local total = table.getn(detectedLoot)
 		local maxScroll = total - LOOT_VISIBLE
 		if maxScroll < 0 then maxScroll = 0 end
+
 		lootScrollBar:SetMinMaxValues(0, maxScroll)
 		if scrollOffset > maxScroll then scrollOffset = maxScroll end
 
 		for i = 1, LOOT_VISIBLE do
 			local dataIdx = i + scrollOffset
 			local row = lootRowFrames[i]
+
 			if dataIdx <= total then
 				local entry = detectedLoot[dataIdx]
 
 				local qtyText = (entry.count and entry.count > 1) and (" (" .. entry.count .. "x)") or ""
-    			row.itemFS:SetText((entry.itemLink or entry.itemName) .. qtyText)
-    			row.itemFS:SetTextColor(0.63, 0.21, 0.93)
+				row.itemFS:SetText((entry.itemLink or entry.itemName) .. qtyText)
+				row.itemFS:SetTextColor(0.63, 0.21, 0.93) -- epic purple
 
 				-- Build claimants string
 				if table.getn(entry.claimants) > 0 then
@@ -993,10 +1005,7 @@ function CopeLoot:RefreshUI()
 				end
 				row:Show()
 			else
-				row.itemFS:SetText("")
-				row.claimFS:SetText("")
-				row.verdictFS:SetText("")
-				row:Show()
+				row:Hide() -- Hide unused row slots completely
 			end
 		end
 		return
