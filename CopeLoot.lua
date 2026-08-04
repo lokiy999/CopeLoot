@@ -1035,6 +1035,48 @@ local function CreateLootFrame()
 	end)
 end
 
+function CopeLoot:AssignLootToPerson(itemName, recipientName)
+	local targetKey = NormaliseItemName(itemName)
+	if targetKey == "" then return end
+
+	-- Find the first open item in detectedLoot that has no assigned recipient yet
+	for i = 1, table.getn(detectedLoot) do
+		local entry = detectedLoot[i]
+		if NormaliseItemName(entry.itemName) == targetKey and not entry.recipient then
+			entry.recipient = recipientName
+			Print("Assigned " .. entry.itemLink .. " -> " .. recipientName)
+
+			if mainFrame and mainFrame:IsShown() then
+				CopeLoot:RefreshUI()
+			end
+			return
+		end
+	end
+end
+
+function CopeLoot:OnSystemMsg(msg)
+	if not msg then return end
+
+	-- Vanilla WoW System Patterns for receiving items:
+	-- Pattern 1: "Player receives item: [Item Name]."
+	local _, _, player, itemLink = string.find(msg, "^(%S+) receives item: (|c%x+|Hitem:%d+:%d+:%d+:%d+|h%[.-%]|h|r)")
+	
+	-- Pattern 2: "You receive item: [Item Name]."
+	if not player and not itemLink then
+		_, _, itemLink = string.find(msg, "^You receive item: (|c%x+|Hitem:%d+:%d+:%d+:%d+|h%[.-%]|h|r)")
+		if itemLink then
+			player = UnitName("player")
+		end
+	end
+
+	if player and itemLink then
+		local _, _, rawItemName = string.find(itemLink, "%[(.-)%]")
+		if rawItemName then
+			CopeLoot:AssignLootToPerson(rawItemName, player)
+		end
+	end
+end
+
 -- ---------------------------------------------------------------------------
 -- Refresh / redraw
 -- ---------------------------------------------------------------------------
@@ -1128,7 +1170,10 @@ function CopeLoot:RefreshUI()
 				end
 
 				local verdict = entry.verdict
-				if string.find(verdict, "^TIE") then
+				if entry.recipient then
+					row.verdictFS:SetText("-> Assigned To: |cff00ff00" .. entry.recipient .. "|r")
+					row.verdictFS:SetTextColor(0.3, 1, 0.3)
+				elseif string.find(verdict, "^TIE") then
 					row.verdictFS:SetText("-> " .. verdict)
 					row.verdictFS:SetTextColor(1, 1, 0.3)
 				elseif string.find(verdict, "No wishlist") or string.find(verdict, "No reserve") then
@@ -1324,6 +1369,7 @@ eventFrame:RegisterEvent("RAID_ROSTER_UPDATE")
 eventFrame:RegisterEvent("PARTY_MEMBERS_CHANGED")
 eventFrame:RegisterEvent("CHAT_MSG_RAID")
 eventFrame:RegisterEvent("CHAT_MSG_RAID_LEADER")
+eventFrame:RegisterEvent("CHAT_MSG_SYSTEM")
 
 eventFrame:SetScript("OnEvent", function()
 	if event == "ADDON_LOADED" and arg1 == "CopeLoot" then
@@ -1335,5 +1381,7 @@ eventFrame:SetScript("OnEvent", function()
 		CheckAutoSwap()
 	elseif event == "CHAT_MSG_RAID" or event == "CHAT_MSG_RAID_LEADER" then
 		CopeLoot:OnChatMsg(arg2, arg1)
+	elseif event == "CHAT_MSG_SYSTEM" then
+		CopeLoot:OnSystemMsg(arg1)
 	end
 end)
