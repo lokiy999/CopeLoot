@@ -65,6 +65,9 @@ end
 -- ---------------------------------------------------------------------------
 local itemIndex = {}
 
+-- Which list the Loot tab resolves drops against. Only one is ever active.
+local lootResolveMode = "wishlist"   -- "wishlist" | "reserve"
+
 local function NormaliseItemName(raw)
 	if not raw or raw == "" then return "" end
 	local name = string.gsub(raw, "%s*%(.-%)%s*$", "")
@@ -236,27 +239,45 @@ local function ResolveLoot(itemName, count)
 	local raidSet = GetRaidMemberSet()
 	local claimants = {}
 
-	if CopeLoot_PlayerData then
-		for i = 1, table.getn(CopeLoot_PlayerData) do
-			local p = CopeLoot_PlayerData[i]
-			if raidSet[p.name] then
-				for col = 1, 3 do
-					local raw
-					if col == 1 then raw = p.wish1
-					elseif col == 2 then raw = p.wish2
-					else raw = p.wish3
-					end
-					if NormaliseItemName(raw) == key then
-						table.insert(claimants, { name = p.name, col = col })
+	if lootResolveMode == "reserve" then
+		if CopeLoot_ReserveData then
+			for i = 1, table.getn(CopeLoot_ReserveData) do
+				local p = CopeLoot_ReserveData[i]
+				if raidSet[p.name] then
+					if NormaliseItemName(p.reserve) == key then
+						table.insert(claimants, { name = p.name, col = 1 })
 					end
 				end
 			end
 		end
-	end
 
-	if table.getn(claimants) == 0 then
-		local qtyPrefix = count > 1 and ("(" .. count .. "x) ") or ""
-		return {}, qtyPrefix .. "No wishlist match in raid"
+		if table.getn(claimants) == 0 then
+			local qtyPrefix = count > 1 and ("(" .. count .. "x) ") or ""
+			return {}, qtyPrefix .. "No reserve match in raid"
+		end
+	else
+		if CopeLoot_PlayerData then
+			for i = 1, table.getn(CopeLoot_PlayerData) do
+				local p = CopeLoot_PlayerData[i]
+				if raidSet[p.name] then
+					for col = 1, 3 do
+						local raw
+						if col == 1 then raw = p.wish1
+						elseif col == 2 then raw = p.wish2
+						else raw = p.wish3
+						end
+						if NormaliseItemName(raw) == key then
+							table.insert(claimants, { name = p.name, col = col })
+						end
+					end
+				end
+			end
+		end
+
+		if table.getn(claimants) == 0 then
+			local qtyPrefix = count > 1 and ("(" .. count .. "x) ") or ""
+			return {}, qtyPrefix .. "No wishlist match in raid"
+		end
 	end
 
 	table.sort(claimants, function(a, b) return a.col < b.col end)
@@ -271,10 +292,18 @@ local function ResolveLoot(itemName, count)
 
 	local countStr = count > 1 and ("(" .. count .. "x Drop) ") or ""
 	local verdict
-	if table.getn(winners) <= count then
-		verdict = countStr .. table.concat(winners, ", ") .. " (priority #" .. bestCol .. ")"
+	if lootResolveMode == "reserve" then
+		if table.getn(winners) <= count then
+			verdict = countStr .. table.concat(winners, ", ") .. " (reserved)"
+		else
+			verdict = countStr .. "TIE (" .. count .. " drop" .. (count > 1 and "s" or "") .. "): " .. table.concat(winners, ", ")
+		end
 	else
-		verdict = countStr .. "TIE #" .. bestCol .. " (" .. count .. " drop" .. (count > 1 and "s" or "") .. "): " .. table.concat(winners, ", ")
+		if table.getn(winners) <= count then
+			verdict = countStr .. table.concat(winners, ", ") .. " (priority #" .. bestCol .. ")"
+		else
+			verdict = countStr .. "TIE #" .. bestCol .. " (" .. count .. " drop" .. (count > 1 and "s" or "") .. "): " .. table.concat(winners, ", ")
+		end
 	end
 
 	return claimants, verdict
@@ -329,6 +358,7 @@ function CopeLoot:OnChatMsg(sender, message)
 			count     = item.count,
 			claimants = claimants,
 			verdict   = verdict,
+			mode      = lootResolveMode,
 		})
 
 		Print("Detected: " .. item.itemLink .. (item.count > 1 and (" x" .. item.count) or "") .. " -> " .. verdict)
@@ -777,6 +807,7 @@ end
 -- Loot tab content
 -- ---------------------------------------------------------------------------
 local lootFrame
+local lootModeBtn
 local lootRowFrames = {}
 local LOOT_VISIBLE = 4
 local LOOT_ROW_SPACING = 68
@@ -847,6 +878,20 @@ local function CreateLootFrame()
 	hdr:SetPoint("TOPLEFT", lootFrame, "TOPLEFT", 4, -4)
 	hdr:SetText("Detected Loot (Epic/Blue, from Raid Chat)")
 	hdr:SetTextColor(1, 0.82, 0)
+
+	local modeBtn = CreateFrame("Button", "CopeLootModeBtn", lootFrame, "UIPanelButtonTemplate")
+	modeBtn:SetWidth(150)
+	modeBtn:SetHeight(20)
+	modeBtn:SetPoint("TOPRIGHT", lootFrame, "TOPRIGHT", -SCROLL_GUTTER, -2)
+	modeBtn:SetScript("OnClick", function()
+		if lootResolveMode == "wishlist" then
+			lootResolveMode = "reserve"
+		else
+			lootResolveMode = "wishlist"
+		end
+		CopeLoot:RefreshUI()
+	end)
+	lootModeBtn = modeBtn
 
 	for i = 1, LOOT_VISIBLE do
 		local row = CreateFrame("Frame", "CopeLootLootRow" .. i, lootFrame)
@@ -988,6 +1033,13 @@ function CopeLoot:RefreshUI()
 	-- --- Loot tab ---
 	if activeTab == "loot" then
 		lootFrame:Show()
+
+		if lootResolveMode == "reserve" then
+			lootModeBtn:SetText("Mode: Reserve")
+		else
+			lootModeBtn:SetText("Mode: Wishlist")
+		end
+
 		local total = table.getn(detectedLoot)
 		local maxScroll = total - LOOT_VISIBLE
 		if maxScroll < 0 then maxScroll = 0 end
@@ -1010,12 +1062,24 @@ function CopeLoot:RefreshUI()
 					local parts = {}
 					for j = 1, table.getn(entry.claimants) do
 						local c = entry.claimants[j]
-						table.insert(parts, c.name .. " (#" .. c.col .. ")")
+						if entry.mode == "reserve" then
+							table.insert(parts, c.name)
+						else
+							table.insert(parts, c.name .. " (#" .. c.col .. ")")
+						end
 					end
-					row.claimFS:SetText("Wishlisted (in raid): " .. table.concat(parts, ", "))
+					if entry.mode == "reserve" then
+						row.claimFS:SetText("Reserved (in raid): " .. table.concat(parts, ", "))
+					else
+						row.claimFS:SetText("Wishlisted (in raid): " .. table.concat(parts, ", "))
+					end
 					row.claimFS:SetTextColor(0.8, 0.8, 0.8)
 				else
-					row.claimFS:SetText("No raid members have this wishlisted")
+					if entry.mode == "reserve" then
+						row.claimFS:SetText("No raid members have this reserved")
+					else
+						row.claimFS:SetText("No raid members have this wishlisted")
+					end
 					row.claimFS:SetTextColor(0.5, 0.5, 0.5)
 				end
 
@@ -1023,7 +1087,7 @@ function CopeLoot:RefreshUI()
 				if string.find(verdict, "^TIE") then
 					row.verdictFS:SetText("-> " .. verdict)
 					row.verdictFS:SetTextColor(1, 1, 0.3)
-				elseif string.find(verdict, "No wishlist") then
+				elseif string.find(verdict, "No wishlist") or string.find(verdict, "No reserve") then
 					row.verdictFS:SetText("-> " .. verdict)
 					row.verdictFS:SetTextColor(0.5, 0.5, 0.5)
 				else
