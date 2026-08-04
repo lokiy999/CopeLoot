@@ -410,8 +410,13 @@ function CopeLoot:BroadcastLootEntry(index)
 						table.insert(parts, c.name .. " (#" .. c.col .. ")")
 					end
 				end
-				local label = (entry.mode == "reserve") and " - Reserved: " or " - Wishlisted: "
-				detailMsg = detailMsg .. label .. table.concat(parts, ", ")
+
+				-- If in reserve mode, format directly as "-> Reserved: player"
+				if entry.mode == "reserve" then
+					detailMsg = "-> Reserved: " .. table.concat(parts, ", ")
+				else
+					detailMsg = detailMsg .. " - Wishlisted: " .. table.concat(parts, ", ")
+				end
 			end
 			SendChatMessage(detailMsg, "RAID")
 		else
