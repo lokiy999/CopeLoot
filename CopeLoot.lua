@@ -320,6 +320,10 @@ function CopeLoot:OnChatMsg(sender, message)
 	local leader = GetRaidLeaderName()
 	if not leader or sender ~= leader then return end
 
+	-- Ignore our own broadcasts so linking an item back to raid chat doesn't
+	-- get re-detected as a fresh drop.
+	if string.find(message, "^%[CopeLoot%]") then return end
+
 	local pos = 1
 	local foundLinks = {}
 
@@ -359,6 +363,7 @@ function CopeLoot:OnChatMsg(sender, message)
 			claimants = claimants,
 			verdict   = verdict,
 			mode      = lootResolveMode,
+			broadcasted = false,
 		})
 
 		Print("Detected: " .. item.itemLink .. (item.count > 1 and (" x" .. item.count) or "") .. " -> " .. verdict)
@@ -380,20 +385,44 @@ function CopeLoot:BroadcastLootEntry(index)
 	local entry = detectedLoot[index]
 	if not entry then return end
 
-	if (GetNumRaidMembers() or 0) > 0 then
-		SendChatMessage("[CopeLoot] " .. entry.itemLink, "RAID")
-		local detailMsg = "-> " .. entry.verdict
-		if table.getn(entry.claimants) > 0 then
-			local parts = {}
-			for i = 1, table.getn(entry.claimants) do
-				local c = entry.claimants[i]
-				table.insert(parts, c.name .. " (#" .. c.col .. ")")
-			end
-			detailMsg = detailMsg .. " - Wishlisted: " .. table.concat(parts, ", ")
+	local inRaid = (GetNumRaidMembers() or 0) > 0
+
+	if entry.mode == "reserve" and table.getn(entry.claimants) == 0 then
+		local rwMsg = "Roll for " .. entry.itemLink .. " MS /roll 100 || OS /roll 99"
+
+		if inRaid then
+			SendChatMessage(rwMsg, "RAID_WARNING")
+		else
+			Print(freeRollMsg)
+			Print("RAID_WARNING: " .. rwMsg)
 		end
-		SendChatMessage(detailMsg, "RAID")
 	else
-		Print("[CopeLoot] " .. entry.itemLink .. " -> " .. entry.verdict)
+		if inRaid then
+			SendChatMessage("[CopeLoot] " .. entry.itemLink, "RAID")
+			local detailMsg = "-> " .. entry.verdict
+			if table.getn(entry.claimants) > 0 then
+				local parts = {}
+				for i = 1, table.getn(entry.claimants) do
+					local c = entry.claimants[i]
+					if entry.mode == "reserve" then
+						table.insert(parts, c.name)
+					else
+						table.insert(parts, c.name .. " (#" .. c.col .. ")")
+					end
+				end
+				local label = (entry.mode == "reserve") and " - Reserved: " or " - Wishlisted: "
+				detailMsg = detailMsg .. label .. table.concat(parts, ", ")
+			end
+			SendChatMessage(detailMsg, "RAID")
+		else
+			Print(entry.itemLink .. " -> " .. entry.verdict)
+		end
+	end
+
+	-- Mark as broadcasted and update UI
+	entry.broadcasted = true
+	if mainFrame and mainFrame:IsShown() then
+		CopeLoot:RefreshUI()
 	end
 end
 
@@ -889,6 +918,16 @@ local function CreateLootFrame()
 		else
 			lootResolveMode = "wishlist"
 		end
+
+		-- Re-evaluate all previously detected items under the new mode
+		for i = 1, table.getn(detectedLoot) do
+			local entry = detectedLoot[i]
+			local claimants, verdict = ResolveLoot(entry.itemName, entry.count)
+			entry.claimants = claimants
+			entry.verdict   = verdict
+			entry.mode      = lootResolveMode
+		end
+
 		CopeLoot:RefreshUI()
 	end)
 	lootModeBtn = modeBtn
@@ -919,6 +958,10 @@ local function CreateLootFrame()
 		bcBtn:SetPoint("RIGHT", delBtn, "LEFT", -4, 0)
 		bcBtn:SetText("Broadcast")
 
+		local bcStatusFS = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		bcStatusFS:SetPoint("TOPRIGHT", bcBtn, "BOTTOMRIGHT", 0, -4)
+		bcStatusFS:SetJustifyH("RIGHT")
+
 		local itemFS = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 		itemFS:SetPoint("TOPLEFT", row, "TOPLEFT", 4, -2)
 		itemFS:SetWidth(CONTENT_W - SCROLL_GUTTER - 130)
@@ -939,6 +982,7 @@ local function CreateLootFrame()
 		row.verdictFS = verdictFS
 		row.bcBtn     = bcBtn
 		row.delBtn    = delBtn
+		row.bcStatusFS = bcStatusFS
 
 		lootRowFrames[i] = row
 	end
@@ -1104,6 +1148,14 @@ function CopeLoot:RefreshUI()
 					StaticPopupDialogs["COPELOOT_CONFIRM_DELETE"].targetIndex = dataIdx
 					StaticPopup_Show("COPELOOT_CONFIRM_DELETE")
 				end)
+
+				if entry.broadcasted then
+					row.bcStatusFS:SetText("Broadcasted")
+					row.bcStatusFS:SetTextColor(0.3, 1, 0.3) -- Green
+				else
+					row.bcStatusFS:SetText("Not Broadcasted")
+					row.bcStatusFS:SetTextColor(0.6, 0.6, 0.6) -- Gray
+				end
 
 				row:Show()
 			else
