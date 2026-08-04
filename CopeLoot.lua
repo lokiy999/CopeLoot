@@ -1,4 +1,3 @@
--- CopeLoot.lua
 -- Wishlist-based loot addon for the guild <Cope>
 -- Target client: World of Warcraft Classic 1.12.1 (Vanilla API)
 
@@ -26,11 +25,6 @@ local CLASS_COLORS = {
 -- ---------------------------------------------------------------------------
 -- Saved variables  (settings persisted across sessions)
 -- ---------------------------------------------------------------------------
--- CopeLootDB = {
---   autoSwap      = true/false,
---   autoBroadcast = true/false,
--- }
-
 local function EnsureDB()
 	if not CopeLootDB then
 		CopeLootDB = {}
@@ -54,8 +48,6 @@ end
 -- ---------------------------------------------------------------------------
 -- Data helpers
 -- ---------------------------------------------------------------------------
--- Reads CopeLoot_PlayerData (from CopeLoot_Data.lua) into a fast-lookup map.
-
 local playerDataByName = {}
 
 local function IndexPlayerData()
@@ -69,39 +61,31 @@ local function IndexPlayerData()
 end
 
 -- ---------------------------------------------------------------------------
--- Item contention index  (rebuilt on each RefreshUI from the active dataset)
+-- Item contention index
 -- ---------------------------------------------------------------------------
--- itemIndex[normalised_name] = {
---   highest  = 1..3,          -- the highest-priority (lowest number) column
---   slots    = { [col] = count },   -- how many players have it in this column
--- }
 local itemIndex = {}
 
 local function NormaliseItemName(raw)
-	-- Parenthetical notes like "(Questhero)" or "(Ronald)" denote ALT
-	-- characters.  They are kept in the display text but stripped here so
-	-- "Maladath (Ronald)" and "Maladath" contest the same slot.
-	--
-	-- Square brackets like "[Fists]" or "[1h Mace]" denote different stat
-	-- rolls of the same base item and are KEPT so that e.g.
-	-- "Ring of Master [Fists]" and "Ring of Master [1h Mace]" are treated
-	-- as separate items.
 	if not raw or raw == "" then return "" end
 	local name = string.gsub(raw, "%s*%(.-%)%s*$", "")
-	-- Strip trailing whitespace
 	name = string.gsub(name, "%s+$", "")
 	return string.lower(name)
 end
 
-local function BuildItemIndex(playerList)
+local function BuildItemIndex(playerList, isReserve)
 	itemIndex = {}
 	for i = 1, table.getn(playerList) do
 		local p = playerList[i]
-		for col = 1, 3 do
+		local maxCols = isReserve and 1 or 3
+		for col = 1, maxCols do
 			local raw
-			if col == 1 then raw = p.wish1
-			elseif col == 2 then raw = p.wish2
-			else raw = p.wish3
+			if isReserve then
+				raw = p.reserve
+			else
+				if col == 1 then raw = p.wish1
+				elseif col == 2 then raw = p.wish2
+				else raw = p.wish3
+				end
 			end
 			local key = NormaliseItemName(raw)
 			if key ~= "" then
@@ -120,42 +104,57 @@ local function BuildItemIndex(playerList)
 	end
 end
 
--- Returns r, g, b for an item text in a given column.
--- Rules:
---   Green  (0.3, 1, 0.3)  : item is untied in ANY column and this is the
---                            highest column it appears in.
---   Red    (1, 0.3, 0.3)  : item appears in a HIGHER-priority column for
---                            someone else (i.e. itemIndex.highest < col).
---   Yellow (1, 1, 0.3)    : item is tied (>1 player) in this column AND
---                            this is the highest column it appears in.
---   White  (1, 1, 1)      : fallback / empty.
 local function GetItemColor(rawName, col)
 	local key = NormaliseItemName(rawName)
-	if key == "" then return 0.4, 0.4, 0.4 end  -- empty slot, dim
+	if key == "" then return 0.4, 0.4, 0.4 end
 
 	local info = itemIndex[key]
-	if not info then return 1, 1, 1 end  -- unknown, white
+	if not info then return 1, 1, 1 end
 
-	-- Red: someone else has it in a higher column
 	if info.highest < col then
 		return 1, 0.3, 0.3
 	end
 
-	-- This IS the highest column for this item
 	local countHere = info.slots[col] or 0
 	if countHere > 1 then
-		-- Yellow: tied in the highest column
 		return 1, 1, 0.3
 	end
 
-	-- Green: untied in the highest column
 	return 0.3, 1, 0.3
 end
 
--- Returns an ordered list of player entries for the active filter.
--- filter: "all" | "raid"
-local function GetFilteredPlayers(filter)
-	if not CopeLoot_PlayerData then
+-- Builds a short display string for owned ZG trinket pieces, e.g. "Gri'lek, Wushoolay".
+local TRINKET_LABELS = {
+	{ key = "grilek",    label = "Gri'lek" },
+	{ key = "hazzarah",  label = "Hazza'rah" },
+	{ key = "renataki",  label = "Renataki" },
+	{ key = "wushoolay", label = "Wushoolay" },
+}
+
+local function FormatTrinkets(p)
+	if not p.trinkets then
+		return "-"
+	end
+
+	local owned = {}
+	for i = 1, table.getn(TRINKET_LABELS) do
+		local t = TRINKET_LABELS[i]
+		if p.trinkets[t.key] then
+			table.insert(owned, t.label)
+		end
+	end
+
+	if table.getn(owned) == 0 then
+		return "-"
+	end
+
+	return table.concat(owned, ", ")
+end
+
+-- Returns an ordered list of player entries for the active dataset and filter.
+-- dataTable: CopeLoot_PlayerData or CopeLoot_ReserveData
+local function GetFilteredPlayers(dataTable, filter, isReserve)
+	if not dataTable then
 		return {}
 	end
 
@@ -165,42 +164,52 @@ local function GetFilteredPlayers(filter)
 		for i = 1, numRaid do
 			local name = UnitName("raid" .. i)
 			if name then
-				raidNames[name] = true
+				local _, englishClass = UnitClass("raid" .. i)
+				raidNames[name] = englishClass or "Unknown"
 			end
 		end
 
+		local haveEntry = {}
 		local result = {}
-		for i = 1, table.getn(CopeLoot_PlayerData) do
-			if raidNames[CopeLoot_PlayerData[i].name] then
-				table.insert(result, CopeLoot_PlayerData[i])
+		for i = 1, table.getn(dataTable) do
+			local p = dataTable[i]
+			if raidNames[p.name] then
+				table.insert(result, p)
+				haveEntry[p.name] = true
 			end
 		end
+
+		-- Include raid members who have no wishlist/reserve entry yet
+		for name, class in pairs(raidNames) do
+			if not haveEntry[name] then
+				if isReserve then
+					table.insert(result, { name = name, class = class, boss = "", reserve = "", trinkets = {} })
+				else
+					table.insert(result, { name = name, class = class, wish1 = "", wish2 = "", wish3 = "" })
+				end
+			end
+		end
+
+		table.sort(result, function(a, b) return a.name < b.name end)
 		return result
 	end
 
-	-- "all"
-	return CopeLoot_PlayerData
+	local sorted = {}
+	for i = 1, table.getn(dataTable) do
+		table.insert(sorted, dataTable[i])
+	end
+	table.sort(sorted, function(a, b) return a.name < b.name end)
+	return sorted
 end
 
 -- ---------------------------------------------------------------------------
 -- Loot detection state
 -- ---------------------------------------------------------------------------
--- Each detected loot drop is stored in this list.  Entries are added when the
--- raid leader links an epic item in /say.
--- detectedLoot = {
---   { itemLink = "|cffa335ee...", itemName = "...", claimants = {
---       { name = "Lokiy", col = 1 },   -- col = priority column (1 = #1, etc.)
---     }, verdict = "Lokiy" | "TIE: A, B" | "No wishlist match" },
--- }
 local detectedLoot = {}
-local LOOT_ROW_HEIGHT = 56     -- each loot entry takes several lines
 
--- Returns the name of the current raid leader, or nil.
 local function GetRaidLeaderName()
 	local numRaid = GetNumRaidMembers() or 0
 	for i = 1, numRaid do
-		-- In 1.12.1, GetRaidRosterInfo(i) returns: name, rank, subgroup, level,
-		-- class, fileName, zone, online, isDead.  rank 2 = leader.
 		local name, rank = GetRaidRosterInfo(i)
 		if name and rank == 2 then
 			return name
@@ -209,7 +218,6 @@ local function GetRaidLeaderName()
 	return nil
 end
 
--- Build a set of names currently in the raid.
 local function GetRaidMemberSet()
 	local set = {}
 	local numRaid = GetNumRaidMembers() or 0
@@ -220,11 +228,6 @@ local function GetRaidMemberSet()
 	return set
 end
 
--- Resolve who should get a detected item.
--- Returns an ordered list of { name, col } sorted by priority column,
--- and a verdict string.
--- Resolve who should get a detected item.
--- Accepts count to denote duplicate drops (e.g., 2x Item).
 local function ResolveLoot(itemName, count)
 	count = count or 1
 	local key = NormaliseItemName(itemName)
@@ -256,7 +259,6 @@ local function ResolveLoot(itemName, count)
 		return {}, qtyPrefix .. "No wishlist match in raid"
 	end
 
-	-- Sort by priority column (ascending = higher priority first)
 	table.sort(claimants, function(a, b) return a.col < b.col end)
 
 	local bestCol = claimants[1].col
@@ -270,52 +272,53 @@ local function ResolveLoot(itemName, count)
 	local countStr = count > 1 and ("(" .. count .. "x Drop) ") or ""
 	local verdict
 	if table.getn(winners) <= count then
-		-- Enough drops for all top-priority claimants
 		verdict = countStr .. table.concat(winners, ", ") .. " (priority #" .. bestCol .. ")"
 	else
-		-- More claimants than available drops at this priority level
 		verdict = countStr .. "TIE #" .. bestCol .. " (" .. count .. " drop" .. (count > 1 and "s" or "") .. "): " .. table.concat(winners, ", ")
 	end
 
 	return claimants, verdict
 end
 
--- Process a chat message: if it contains an epic item link, record it.
--- Process a chat message: if it contains epic item links, record each drop.
+-- Item quality colors we care about: Epic (purple) and Rare (blue)
+-- Full 8-digit hex as it appears in chat links (alpha prefix "ff" + RRGGBB)
+local LOOT_QUALITY_COLORS = {
+	["ffa335ee"] = true, -- Epic
+	["ff0070dd"] = true, -- Rare (Blue)
+}
+
 function CopeLoot:OnChatMsg(sender, message)
-	-- Only process from the raid leader
 	local leader = GetRaidLeaderName()
 	if not leader or sender ~= leader then return end
 
-	-- Find all epic (quality 4: |cffa335ee) item links in the message
 	local pos = 1
 	local foundLinks = {}
 
 	while true do
-		local s, e, itemLink = string.find(message,
-			"(|cffa335ee|Hitem:%d+:%d+:%d+:%d+|h%[.-%]|h|r)", pos)
+		local s, e, itemLink, colorHex = string.find(message,
+			"(|c(%x%x%x%x%x%x%x%x)|Hitem:%d+:%d+:%d+:%d+|h%[.-%]|h|r)", pos)
 		if not s then break end
 		pos = e + 1
 
-		local _, _, itemName = string.find(itemLink, "%[(.-)%]")
-		if itemName then
-			-- Check for quantity prefix/suffix near the link like "2x [Item]" or "[Item] x2"
-			local prefix = string.sub(message, math.max(1, s - 5), s - 1)
-			local suffix = string.sub(message, e + 1, e + 5)
-			
-			local count = 1
-			local _, _, pQty = string.find(prefix, "(%d+)%s*x%s*$")
-			local _, _, sQty = string.find(suffix, "^%s*x%s*(%d+)")
-			
-			if pQty then count = tonumber(pQty) or 1
-			elseif sQty then count = tonumber(sQty) or 1
-			end
+		if LOOT_QUALITY_COLORS[string.lower(colorHex)] then
+			local _, _, itemName = string.find(itemLink, "%[(.-)%]")
+			if itemName then
+				local prefix = string.sub(message, math.max(1, s - 5), s - 1)
+				local suffix = string.sub(message, e + 1, e + 5)
+				
+				local count = 1
+				local _, _, pQty = string.find(prefix, "(%d+)%s*x%s*$")
+				local _, _, sQty = string.find(suffix, "^%s*x%s*(%d+)")
+				
+				if pQty then count = tonumber(pQty) or 1
+				elseif sQty then count = tonumber(sQty) or 1
+				end
 
-			table.insert(foundLinks, { itemLink = itemLink, itemName = itemName, count = count })
+				table.insert(foundLinks, { itemLink = itemLink, itemName = itemName, count = count })
+			end
 		end
 	end
 
-	-- Process all detected items (including duplicate links in the same chat line)
 	for i = 1, table.getn(foundLinks) do
 		local item = foundLinks[i]
 		local claimants, verdict = ResolveLoot(item.itemName, item.count)
@@ -330,14 +333,12 @@ function CopeLoot:OnChatMsg(sender, message)
 
 		Print("Detected: " .. item.itemLink .. (item.count > 1 and (" x" .. item.count) or "") .. " -> " .. verdict)
 
-		-- Auto-broadcast if enabled
 		local db = EnsureDB()
 		if db.autoBroadcast then
 			CopeLoot:BroadcastLootEntry(table.getn(detectedLoot))
 		end
 	end
 
-	-- Switch to loot tab if window is open and new loot was found
 	if table.getn(foundLinks) > 0 and mainFrame and mainFrame:IsShown() then
 		activeTab = "loot"
 		scrollOffset = 0
@@ -345,16 +346,12 @@ function CopeLoot:OnChatMsg(sender, message)
 	end
 end
 
--- Broadcast a single loot entry to raid chat preserving clickable links.
 function CopeLoot:BroadcastLootEntry(index)
 	local entry = detectedLoot[index]
 	if not entry then return end
 
 	if (GetNumRaidMembers() or 0) > 0 then
-		-- Send the clickable link line
 		SendChatMessage("[CopeLoot] " .. entry.itemLink, "RAID")
-		
-		-- Send details on a separate line
 		local detailMsg = "-> " .. entry.verdict
 		if table.getn(entry.claimants) > 0 then
 			local parts = {}
@@ -370,7 +367,6 @@ function CopeLoot:BroadcastLootEntry(index)
 	end
 end
 
--- Broadcast all current loot entries.
 function CopeLoot:BroadcastAllLoot()
 	for i = 1, table.getn(detectedLoot) do
 		CopeLoot:BroadcastLootEntry(i)
@@ -385,26 +381,22 @@ local WINDOW_H       = 400
 local ROW_HEIGHT     = 20
 local HEADER_HEIGHT  = 24
 local TAB_HEIGHT     = 24
-local TAB_WIDTH      = 100
+local TAB_WIDTH      = 85
 local VISIBLE_ROWS   = 13
 
--- Scrollbar geometry. The content area is inset by SCROLL_GUTTER on the right
--- so rows/headers never run underneath the scrollbar.
 local LEFT_MARGIN    = 20
 local SCROLL_W       = 16
-local SCROLL_INSET   = 28   -- distance from window right edge to scrollbar right edge
-local SCROLL_GUTTER  = 30   -- reserved width: scrollbar + breathing room
+local SCROLL_INSET   = 28
+local SCROLL_GUTTER  = 30
 
--- Usable width for headers and rows (stops short of the scrollbar)
 local CONTENT_W      = WINDOW_W - LEFT_MARGIN * 2 - SCROLL_GUTTER
 
--- Column widths must satisfy: NAME_COL_W + 3*WISH_COL_W + 12 <= CONTENT_W
 local NAME_COL_W     = 110
 local WISH_COL_W     = 135
 
 -- Active state
-local activeTab    = "wishlist"   -- "wishlist" | "loot" | "settings"
-local activeFilter = "all"       -- "all" | "raid"
+local activeTab    = "wishlist"   -- "wishlist" | "reserves" | "loot" | "settings"
+local activeFilter = "all"        -- "all" | "raid"
 local scrollOffset = 0
 
 -- ---------------------------------------------------------------------------
@@ -431,20 +423,16 @@ local function CreateMainFrame()
 	mainFrame:SetBackdropColor(0, 0, 0, 0.85)
 	mainFrame:Hide()
 
-	-- Drag handling
 	mainFrame:RegisterForDrag("LeftButton")
 	mainFrame:SetScript("OnDragStart", function() this:StartMoving() end)
 	mainFrame:SetScript("OnDragStop", function() this:StopMovingOrSizing() end)
 
-	-- ESC closes the window
 	tinsert(UISpecialFrames, "CopeLootMainFrame")
 
-	-- Title
 	local title = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
 	title:SetPoint("TOP", mainFrame, "TOP", 0, -16)
 	title:SetText("CopeLoot - Cope Guild Wishlists")
 
-	-- Close button
 	local closeBtn = CreateFrame("Button", "CopeLootCloseButton", mainFrame, "UIPanelCloseButton")
 	closeBtn:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -5, -5)
 
@@ -454,10 +442,11 @@ end
 -- ---------------------------------------------------------------------------
 -- Tabs
 -- ---------------------------------------------------------------------------
-local tabWishlist, tabLoot, tabSettings
+local tabWishlist, tabReserves, tabLoot, tabSettings
 
 local function SetActiveTab(tab)
 	activeTab = tab
+	scrollOffset = 0
 	CopeLoot:RefreshUI()
 end
 
@@ -479,14 +468,32 @@ local function CreateTabs()
 	twText:SetPoint("CENTER", tabWishlist, "CENTER", 0, 0)
 	twText:SetText("Wishlist")
 	tabWishlist.text = twText
-
 	tabWishlist:SetScript("OnClick", function() SetActiveTab("wishlist") end)
+
+	-- Reserves tab
+	tabReserves = CreateFrame("Button", "CopeLootTabReserves", mainFrame)
+	tabReserves:SetWidth(TAB_WIDTH)
+	tabReserves:SetHeight(TAB_HEIGHT)
+	tabReserves:SetPoint("LEFT", tabWishlist, "RIGHT", 4, 0)
+	tabReserves:SetBackdrop({
+		bgFile   = "Interface\\Buttons\\WHITE8X8",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		tile     = true, tileSize = 8, edgeSize = 12,
+		insets   = { left = 2, right = 2, top = 2, bottom = 2 },
+	})
+	tabReserves:SetBackdropColor(0.3, 0.3, 0.3, 1)
+
+	local trText = tabReserves:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	trText:SetPoint("CENTER", tabReserves, "CENTER", 0, 0)
+	trText:SetText("Reserves")
+	tabReserves.text = trText
+	tabReserves:SetScript("OnClick", function() SetActiveTab("reserves") end)
 
 	-- Loot tab
 	tabLoot = CreateFrame("Button", "CopeLootTabLoot", mainFrame)
 	tabLoot:SetWidth(TAB_WIDTH)
 	tabLoot:SetHeight(TAB_HEIGHT)
-	tabLoot:SetPoint("LEFT", tabWishlist, "RIGHT", 4, 0)
+	tabLoot:SetPoint("LEFT", tabReserves, "RIGHT", 4, 0)
 	tabLoot:SetBackdrop({
 		bgFile   = "Interface\\Buttons\\WHITE8X8",
 		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
@@ -499,7 +506,6 @@ local function CreateTabs()
 	tlText:SetPoint("CENTER", tabLoot, "CENTER", 0, 0)
 	tlText:SetText("Loot")
 	tabLoot.text = tlText
-
 	tabLoot:SetScript("OnClick", function() SetActiveTab("loot") end)
 
 	-- Settings tab
@@ -519,12 +525,11 @@ local function CreateTabs()
 	tsText:SetPoint("CENTER", tabSettings, "CENTER", 0, 0)
 	tsText:SetText("Settings")
 	tabSettings.text = tsText
-
 	tabSettings:SetScript("OnClick", function() SetActiveTab("settings") end)
 end
 
 -- ---------------------------------------------------------------------------
--- Wishlist tab - filter bar
+-- Wishlist / Reserves filter bar
 -- ---------------------------------------------------------------------------
 local filterAllBtn, filterRaidBtn
 
@@ -548,9 +553,8 @@ local function CreateFilterBar()
 
 	local faText = filterAllBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 	faText:SetPoint("CENTER", filterAllBtn, "CENTER", 0, 0)
-	faText:SetText("All Wishlist")
+	faText:SetText("All Players")
 	filterAllBtn.text = faText
-
 	filterAllBtn:SetScript("OnClick", function() SetFilter("all") end)
 
 	filterRaidBtn = CreateFrame("Button", "CopeLootFilterRaid", mainFrame)
@@ -568,18 +572,17 @@ local function CreateFilterBar()
 	frText:SetPoint("CENTER", filterRaidBtn, "CENTER", 0, 0)
 	frText:SetText("Current Raid")
 	filterRaidBtn.text = frText
-
 	filterRaidBtn:SetScript("OnClick", function() SetFilter("raid") end)
 end
 
 -- ---------------------------------------------------------------------------
--- Wishlist tab - column headers + data rows
+-- Headers & Data Rows
 -- ---------------------------------------------------------------------------
 local headerFrame
+local hW1, hW2, hW3
 local rowFrames = {}
 
 local function CreateHeaderAndRows()
-	-- Column header bar
 	headerFrame = CreateFrame("Frame", "CopeLootHeaderFrame", mainFrame)
 	headerFrame:SetWidth(CONTENT_W)
 	headerFrame:SetHeight(HEADER_HEIGHT)
@@ -592,42 +595,39 @@ local function CreateHeaderAndRows()
 	hPlayer:SetText("Player")
 	hPlayer:SetTextColor(1, 0.82, 0)
 
-	local hW1 = headerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	hW1 = headerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 	hW1:SetPoint("LEFT", headerFrame, "LEFT", NAME_COL_W + 4, 0)
 	hW1:SetWidth(WISH_COL_W)
 	hW1:SetJustifyH("LEFT")
 	hW1:SetText("#1")
 	hW1:SetTextColor(1, 0.82, 0)
 
-	local hW2 = headerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	hW2 = headerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 	hW2:SetPoint("LEFT", headerFrame, "LEFT", NAME_COL_W + WISH_COL_W + 8, 0)
 	hW2:SetWidth(WISH_COL_W)
 	hW2:SetJustifyH("LEFT")
 	hW2:SetText("#2")
 	hW2:SetTextColor(1, 0.82, 0)
 
-	local hW3 = headerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	hW3 = headerFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 	hW3:SetPoint("LEFT", headerFrame, "LEFT", NAME_COL_W + WISH_COL_W * 2 + 12, 0)
 	hW3:SetWidth(WISH_COL_W)
 	hW3:SetJustifyH("LEFT")
 	hW3:SetText("#3")
 	hW3:SetTextColor(1, 0.82, 0)
 
-	-- Separator line
 	local sep = headerFrame:CreateTexture(nil, "ARTWORK")
 	sep:SetTexture(1, 0.82, 0, 0.5)
 	sep:SetWidth(CONTENT_W)
 	sep:SetHeight(1)
 	sep:SetPoint("BOTTOMLEFT", headerFrame, "BOTTOMLEFT", 0, 0)
 
-	-- Pre-create row frames
 	for i = 1, VISIBLE_ROWS do
 		local row = CreateFrame("Frame", "CopeLootRow" .. i, mainFrame)
 		row:SetWidth(CONTENT_W)
 		row:SetHeight(ROW_HEIGHT)
 		row:SetPoint("TOPLEFT", headerFrame, "BOTTOMLEFT", 0, -(i - 1) * ROW_HEIGHT - 2)
 
-		-- Alternate row bg
 		local bg = row:CreateTexture(nil, "BACKGROUND")
 		bg:SetAllPoints(row)
 		if math.mod(i, 2) == 0 then
@@ -671,19 +671,12 @@ end
 local scrollBar
 
 local function CreateScrollBar()
-	-- NOTE: Do NOT use "UIPanelScrollBarTemplate" here. In 1.12.1 that template
-	-- ships an XML OnValueChanged handler that calls
-	--     this:GetParent():SetVerticalScroll(value)
-	-- which only exists on a ScrollFrame. Our parent is a plain Frame, so it
-	-- errors with "attempt to call method 'SetVerticalScroll' (a nil value)".
-	-- We build a bare Slider and supply our own artwork/handler instead.
 	scrollBar = CreateFrame("Slider", "CopeLootScrollBar", mainFrame)
 	scrollBar:SetWidth(SCROLL_W)
 	scrollBar:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -SCROLL_INSET, -122)
 	scrollBar:SetPoint("BOTTOMRIGHT", mainFrame, "BOTTOMRIGHT", -SCROLL_INSET, 20)
 	scrollBar:SetOrientation("VERTICAL")
 
-	-- Track background
 	scrollBar:SetBackdrop({
 		bgFile   = "Interface\\Buttons\\UI-SliderBar-Background",
 		edgeFile = "Interface\\Buttons\\UI-SliderBar-Border",
@@ -691,15 +684,12 @@ local function CreateScrollBar()
 		insets   = { left = 3, right = 3, top = 6, bottom = 6 },
 	})
 
-	-- Thumb
 	local thumb = scrollBar:CreateTexture(nil, "OVERLAY")
 	thumb:SetTexture("Interface\\Buttons\\UI-ScrollBar-Knob")
 	thumb:SetWidth(SCROLL_W)
 	thumb:SetHeight(SCROLL_W)
 	scrollBar:SetThumbTexture(thumb)
 
-	-- IMPORTANT: register the handler BEFORE the first SetValue, otherwise the
-	-- initial SetValue fires whatever handler is currently attached.
 	scrollBar:SetScript("OnValueChanged", function()
 		scrollOffset = math.floor(this:GetValue())
 		CopeLoot:RefreshUI()
@@ -709,7 +699,6 @@ local function CreateScrollBar()
 	scrollBar:SetValueStep(1)
 	scrollBar:SetValue(0)
 
-	-- Mouse-wheel on main frame
 	mainFrame:EnableMouseWheel(true)
 	mainFrame:SetScript("OnMouseWheel", function()
 		local newVal = scrollOffset - arg1
@@ -730,12 +719,11 @@ local function CreateSettingsFrame()
 	settingsFrame:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", 20, -70)
 	settingsFrame:Hide()
 
-	-- Auto-swap checkbox
 	local cb = CreateFrame("CheckButton", "CopeLootAutoSwapCB", settingsFrame, "UICheckButtonTemplate")
 	cb:SetWidth(24)
 	cb:SetHeight(24)
 	cb:SetPoint("TOPLEFT", settingsFrame, "TOPLEFT", 4, -10)
-	cb:SetChecked(true) -- will be refreshed from DB
+	cb:SetChecked(true)
 
 	local cbLabel = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 	cbLabel:SetPoint("LEFT", cb, "RIGHT", 4, 0)
@@ -743,32 +731,26 @@ local function CreateSettingsFrame()
 
 	cb:SetScript("OnClick", function()
 		local db = EnsureDB()
-		if this:GetChecked() then
-			db.autoSwap = true
-		else
-			db.autoSwap = false
-		end
+		db.autoSwap = this:GetChecked() and true or false
 	end)
 
 	settingsFrame.autoSwapCB = cb
 
-	-- Info text for auto-swap
 	local info = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	info:SetPoint("TOPLEFT", cb, "BOTTOMLEFT", 0, -8)
 	info:SetWidth(WINDOW_W - 60)
 	info:SetJustifyH("LEFT")
 	info:SetText(
-		"When enabled, the Wishlist tab filter automatically switches to " ..
+		"When enabled, the Wishlist/Reserves tab filter automatically switches to " ..
 		"\"Current Raid\" when you join a raid group, and back to " ..
-		"\"All Wishlist\" when you leave the raid."
+		"\"All Players\" when you leave the raid."
 	)
 
-	-- Auto-broadcast checkbox
 	local cb2 = CreateFrame("CheckButton", "CopeLootAutoBroadcastCB", settingsFrame, "UICheckButtonTemplate")
 	cb2:SetWidth(24)
 	cb2:SetHeight(24)
 	cb2:SetPoint("TOPLEFT", info, "BOTTOMLEFT", 0, -16)
-	cb2:SetChecked(false) -- refreshed from DB
+	cb2:SetChecked(false)
 
 	local cb2Label = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 	cb2Label:SetPoint("LEFT", cb2, "RIGHT", 4, 0)
@@ -776,23 +758,18 @@ local function CreateSettingsFrame()
 
 	cb2:SetScript("OnClick", function()
 		local db = EnsureDB()
-		if this:GetChecked() then
-			db.autoBroadcast = true
-		else
-			db.autoBroadcast = false
-		end
+		db.autoBroadcast = this:GetChecked() and true or false
 	end)
 
 	settingsFrame.autoBroadcastCB = cb2
 
-	-- Info text for auto-broadcast
 	local info2 = settingsFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	info2:SetPoint("TOPLEFT", cb2, "BOTTOMLEFT", 0, -8)
 	info2:SetWidth(WINDOW_W - 60)
 	info2:SetJustifyH("LEFT")
 	info2:SetText(
 		"When enabled, CopeLoot automatically sends the wishlist verdict " ..
-		"to raid chat whenever the raid leader links an epic item in /say."
+		"to raid chat whenever the raid leader links an epic or rare (blue) item in /say."
 	)
 end
 
@@ -801,16 +778,63 @@ end
 -- ---------------------------------------------------------------------------
 local lootFrame
 local lootRowFrames = {}
-local LOOT_VISIBLE = 5  -- max loot entries visible at once
-local lootScrollBar
+local LOOT_VISIBLE = 4
+local LOOT_ROW_SPACING = 68
 
--- ---------------------------------------------------------------------------
--- Loot tab content
--- ---------------------------------------------------------------------------
-local lootFrame
-local lootRowFrames = {}
-local LOOT_VISIBLE = 4         -- Reduced to 4 so multi-line entries fit without hitting buttons
-local LOOT_ROW_SPACING = 68   -- Clean vertical spacing per entry
+StaticPopupDialogs["COPELOOT_CONFIRM_DELETE"] = {
+	text = "Are you sure you want to delete this loot entry?",
+	button1 = "Yes",
+	button2 = "No",
+	OnAccept = function()
+		if StaticPopupDialogs["COPELOOT_CONFIRM_DELETE"].targetIndex then
+			table.remove(detectedLoot, StaticPopupDialogs["COPELOOT_CONFIRM_DELETE"].targetIndex)
+			CopeLoot:RefreshUI()
+		end
+	end,
+	timeout = 0,
+	whileDead = 1,
+	hideOnEscape = 1,
+}
+
+StaticPopupDialogs["COPELOOT_CONFIRM_BROADCAST"] = {
+	text = "Are you sure you want to broadcast this loot entry to raid chat?",
+	button1 = "Yes",
+	button2 = "No",
+	OnAccept = function()
+		if StaticPopupDialogs["COPELOOT_CONFIRM_BROADCAST"].targetIndex then
+			CopeLoot:BroadcastLootEntry(StaticPopupDialogs["COPELOOT_CONFIRM_BROADCAST"].targetIndex)
+		end
+	end,
+	timeout = 0,
+	whileDead = 1,
+	hideOnEscape = 1,
+}
+
+StaticPopupDialogs["COPELOOT_CONFIRM_BROADCAST_ALL"] = {
+	text = "Are you sure you want to broadcast ALL detected loot entries to raid chat?",
+	button1 = "Yes",
+	button2 = "No",
+	OnAccept = function()
+		CopeLoot:BroadcastAllLoot()
+	end,
+	timeout = 0,
+	whileDead = 1,
+	hideOnEscape = 1,
+}
+
+StaticPopupDialogs["COPELOOT_CONFIRM_CLEAR_ALL"] = {
+	text = "Are you sure you want to clear ALL detected loot entries?",
+	button1 = "Yes",
+	button2 = "No",
+	OnAccept = function()
+		detectedLoot = {}
+		scrollOffset = 0
+		CopeLoot:RefreshUI()
+	end,
+	timeout = 0,
+	whileDead = 1,
+	hideOnEscape = 1,
+}
 
 local function CreateLootFrame()
 	lootFrame = CreateFrame("Frame", "CopeLootLootFrame", mainFrame)
@@ -819,20 +843,17 @@ local function CreateLootFrame()
 	lootFrame:SetPoint("TOPLEFT", mainFrame, "TOPLEFT", LEFT_MARGIN, -70)
 	lootFrame:Hide()
 
-	-- Loot header
 	local hdr = lootFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 	hdr:SetPoint("TOPLEFT", lootFrame, "TOPLEFT", 4, -4)
-	hdr:SetText("Detected Epic Loot (from Raid Chat)")
+	hdr:SetText("Detected Loot (Epic/Blue, from Raid Chat)")
 	hdr:SetTextColor(1, 0.82, 0)
 
-	-- Pre-create loot entry rows
 	for i = 1, LOOT_VISIBLE do
 		local row = CreateFrame("Frame", "CopeLootLootRow" .. i, lootFrame)
 		row:SetWidth(CONTENT_W - SCROLL_GUTTER)
 		row:SetHeight(60)
 		row:SetPoint("TOPLEFT", lootFrame, "TOPLEFT", 4, -24 - (i - 1) * LOOT_ROW_SPACING)
 
-		-- Alternating background
 		local bg = row:CreateTexture(nil, "BACKGROUND")
 		bg:SetAllPoints(row)
 		if math.mod(i, 2) == 0 then
@@ -841,32 +862,42 @@ local function CreateLootFrame()
 			bg:SetTexture(0.5, 0.5, 0.5, 0.08)
 		end
 
-		-- Line 1: Item Name
+		local delBtn = CreateFrame("Button", "CopeLootDelBtn" .. i, row, "UIPanelButtonTemplate")
+		delBtn:SetWidth(50)
+		delBtn:SetHeight(20)
+		delBtn:SetPoint("TOPRIGHT", row, "TOPRIGHT", -4, -4)
+		delBtn:SetText("Delete")
+
+		local bcBtn = CreateFrame("Button", "CopeLootBcBtn" .. i, row, "UIPanelButtonTemplate")
+		bcBtn:SetWidth(65)
+		bcBtn:SetHeight(20)
+		bcBtn:SetPoint("RIGHT", delBtn, "LEFT", -4, 0)
+		bcBtn:SetText("Broadcast")
+
 		local itemFS = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 		itemFS:SetPoint("TOPLEFT", row, "TOPLEFT", 4, -2)
-		itemFS:SetWidth(CONTENT_W - SCROLL_GUTTER - 8)
+		itemFS:SetWidth(CONTENT_W - SCROLL_GUTTER - 130)
 		itemFS:SetJustifyH("LEFT")
 
-		-- Line 2: Claimants / Wishlisted info
 		local claimFS = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 		claimFS:SetPoint("TOPLEFT", itemFS, "BOTTOMLEFT", 0, -2)
-		claimFS:SetWidth(CONTENT_W - SCROLL_GUTTER - 8)
+		claimFS:SetWidth(CONTENT_W - SCROLL_GUTTER - 130)
 		claimFS:SetJustifyH("LEFT")
 
-		-- Line 3: Verdict
 		local verdictFS = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 		verdictFS:SetPoint("TOPLEFT", claimFS, "BOTTOMLEFT", 0, -2)
-		verdictFS:SetWidth(CONTENT_W - SCROLL_GUTTER - 8)
+		verdictFS:SetWidth(CONTENT_W - SCROLL_GUTTER - 130)
 		verdictFS:SetJustifyH("LEFT")
 
 		row.itemFS    = itemFS
 		row.claimFS   = claimFS
 		row.verdictFS = verdictFS
+		row.bcBtn     = bcBtn
+		row.delBtn    = delBtn
 
 		lootRowFrames[i] = row
 	end
 
-	-- Loot scrollbar
 	lootScrollBar = CreateFrame("Slider", "CopeLootLootScrollBar", lootFrame)
 	lootScrollBar:SetWidth(SCROLL_W)
 	lootScrollBar:SetPoint("TOPRIGHT", mainFrame, "TOPRIGHT", -SCROLL_INSET, -96)
@@ -884,7 +915,6 @@ local function CreateLootFrame()
 	lThumb:SetHeight(SCROLL_W)
 	lootScrollBar:SetThumbTexture(lThumb)
 
-	-- OnValueChanged handler for Loot Tab scrollbar
 	lootScrollBar:SetScript("OnValueChanged", function()
 		scrollOffset = math.floor(this:GetValue())
 		CopeLoot:RefreshUI()
@@ -893,39 +923,37 @@ local function CreateLootFrame()
 	lootScrollBar:SetValueStep(1)
 	lootScrollBar:SetValue(0)
 
-	-- Broadcast All button anchored cleanly at bottom
 	local broadcastBtn = CreateFrame("Button", "CopeLootBroadcastBtn", lootFrame, "UIPanelButtonTemplate")
 	broadcastBtn:SetWidth(120)
 	broadcastBtn:SetHeight(22)
 	broadcastBtn:SetPoint("BOTTOMLEFT", mainFrame, "BOTTOMLEFT", 20, 15)
 	broadcastBtn:SetText("Broadcast All")
 	broadcastBtn:SetScript("OnClick", function()
-		CopeLoot:BroadcastAllLoot()
+		if table.getn(detectedLoot) > 0 then
+			StaticPopup_Show("COPELOOT_CONFIRM_BROADCAST_ALL")
+		end
 	end)
 
-	-- Clear button
 	local clearBtn = CreateFrame("Button", "CopeLootClearLootBtn", lootFrame, "UIPanelButtonTemplate")
 	clearBtn:SetWidth(80)
 	clearBtn:SetHeight(22)
 	clearBtn:SetPoint("LEFT", broadcastBtn, "RIGHT", 8, 0)
-	clearBtn:SetText("Clear")
+	clearBtn:SetText("Clear All")
 	clearBtn:SetScript("OnClick", function()
-		detectedLoot = {}
-		scrollOffset = 0
-		CopeLoot:RefreshUI()
+		if table.getn(detectedLoot) > 0 then
+			StaticPopup_Show("COPELOOT_CONFIRM_CLEAR_ALL")
+		end
 	end)
 end
 
 -- ---------------------------------------------------------------------------
 -- Refresh / redraw
 -- ---------------------------------------------------------------------------
-
 function CopeLoot:RefreshUI()
 	if not mainFrame or not mainFrame:IsShown() then return end
 
 	local db = EnsureDB()
 
-	-- Tab highlight (active = green, inactive = grey)
 	local function HighlightTab(tab, isActive)
 		if isActive then
 			tab:SetBackdropColor(0.2, 0.6, 0.2, 1)
@@ -934,10 +962,11 @@ function CopeLoot:RefreshUI()
 		end
 	end
 	HighlightTab(tabWishlist, activeTab == "wishlist")
+	HighlightTab(tabReserves, activeTab == "reserves")
 	HighlightTab(tabLoot,     activeTab == "loot")
 	HighlightTab(tabSettings, activeTab == "settings")
 
-	-- Hide all panes first
+	-- Hide all panes
 	filterAllBtn:Hide()
 	filterRaidBtn:Hide()
 	headerFrame:Hide()
@@ -975,9 +1004,8 @@ function CopeLoot:RefreshUI()
 
 				local qtyText = (entry.count and entry.count > 1) and (" (" .. entry.count .. "x)") or ""
 				row.itemFS:SetText((entry.itemLink or entry.itemName) .. qtyText)
-				row.itemFS:SetTextColor(0.63, 0.21, 0.93) -- epic purple
+				row.itemFS:SetTextColor(0.63, 0.21, 0.93)
 
-				-- Build claimants string
 				if table.getn(entry.claimants) > 0 then
 					local parts = {}
 					for j = 1, table.getn(entry.claimants) do
@@ -991,27 +1019,37 @@ function CopeLoot:RefreshUI()
 					row.claimFS:SetTextColor(0.5, 0.5, 0.5)
 				end
 
-				-- Verdict with color
 				local verdict = entry.verdict
 				if string.find(verdict, "^TIE") then
 					row.verdictFS:SetText("-> " .. verdict)
-					row.verdictFS:SetTextColor(1, 1, 0.3) -- yellow for tie
+					row.verdictFS:SetTextColor(1, 1, 0.3)
 				elseif string.find(verdict, "No wishlist") then
 					row.verdictFS:SetText("-> " .. verdict)
-					row.verdictFS:SetTextColor(0.5, 0.5, 0.5) -- grey
+					row.verdictFS:SetTextColor(0.5, 0.5, 0.5)
 				else
 					row.verdictFS:SetText("-> Award to: " .. verdict)
-					row.verdictFS:SetTextColor(0.3, 1, 0.3) -- green for clear winner
+					row.verdictFS:SetTextColor(0.3, 1, 0.3)
 				end
+
+				row.bcBtn:SetScript("OnClick", function()
+					StaticPopupDialogs["COPELOOT_CONFIRM_BROADCAST"].targetIndex = dataIdx
+					StaticPopup_Show("COPELOOT_CONFIRM_BROADCAST")
+				end)
+
+				row.delBtn:SetScript("OnClick", function()
+					StaticPopupDialogs["COPELOOT_CONFIRM_DELETE"].targetIndex = dataIdx
+					StaticPopup_Show("COPELOOT_CONFIRM_DELETE")
+				end)
+
 				row:Show()
 			else
-				row:Hide() -- Hide unused row slots completely
+				row:Hide()
 			end
 		end
 		return
 	end
 
-	-- --- Wishlist tab ---
+	-- --- Wishlist or Reserves Tab ---
 	filterAllBtn:Show()
 	filterRaidBtn:Show()
 	headerFrame:Show()
@@ -1020,7 +1058,6 @@ function CopeLoot:RefreshUI()
 		rowFrames[i]:Show()
 	end
 
-	-- Filter button highlight
 	if activeFilter == "all" then
 		filterAllBtn:SetBackdropColor(0.2, 0.5, 0.8, 1)
 		filterRaidBtn:SetBackdropColor(0.3, 0.3, 0.3, 1)
@@ -1029,12 +1066,24 @@ function CopeLoot:RefreshUI()
 		filterRaidBtn:SetBackdropColor(0.2, 0.5, 0.8, 1)
 	end
 
-	-- Get data and rebuild the contention index for the visible set
-	local players = GetFilteredPlayers(activeFilter)
-	local total = table.getn(players)
-	BuildItemIndex(players)
+	local isReserve = (activeTab == "reserves")
+	local rawTable = isReserve and CopeLoot_ReserveData or CopeLoot_PlayerData
 
-	-- Update scroll range
+	-- Adjust header labels according to active tab
+	if isReserve then
+		hW1:SetText("Reserve Item")
+		hW2:SetText("Boss")
+		hW3:SetText("Trinket Pieces")
+	else
+		hW1:SetText("#1")
+		hW2:SetText("#2")
+		hW3:SetText("#3")
+	end
+
+	local players = GetFilteredPlayers(rawTable, activeFilter, isReserve)
+	local total = table.getn(players)
+	BuildItemIndex(players, isReserve)
+
 	local maxScroll = total - VISIBLE_ROWS
 	if maxScroll < 0 then maxScroll = 0 end
 	scrollBar:SetMinMaxValues(0, maxScroll)
@@ -1042,7 +1091,6 @@ function CopeLoot:RefreshUI()
 		scrollOffset = maxScroll
 	end
 
-	-- Populate rows
 	for i = 1, VISIBLE_ROWS do
 		local dataIdx = i + scrollOffset
 		local row = rowFrames[i]
@@ -1056,19 +1104,28 @@ function CopeLoot:RefreshUI()
 			end
 			row.nameFS:SetText(p.name)
 
-			row.w1FS:SetText(p.wish1 ~= "" and p.wish1 or "-")
-			row.w2FS:SetText(p.wish2 ~= "" and p.wish2 or "-")
-			row.w3FS:SetText(p.wish3 ~= "" and p.wish3 or "-")
+			if isReserve then
+				row.w1FS:SetText(p.reserve ~= "" and p.reserve or "-")
+				row.w2FS:SetText(p.boss ~= "" and p.boss or "-")
+				row.w3FS:SetText(FormatTrinkets(p))
 
-			-- Apply contention-based coloring
-			local r1, g1, b1 = GetItemColor(p.wish1, 1)
-			row.w1FS:SetTextColor(r1, g1, b1)
+				row.w1FS:SetTextColor(1, 1, 1)
+				row.w2FS:SetTextColor(1, 1, 1)
+				row.w3FS:SetTextColor(1, 1, 1)
+			else
+				row.w1FS:SetText(p.wish1 ~= "" and p.wish1 or "-")
+				row.w2FS:SetText(p.wish2 ~= "" and p.wish2 or "-")
+				row.w3FS:SetText(p.wish3 ~= "" and p.wish3 or "-")
 
-			local r2, g2, b2 = GetItemColor(p.wish2, 2)
-			row.w2FS:SetTextColor(r2, g2, b2)
+				local r1, g1, b1 = GetItemColor(p.wish1, 1)
+				row.w1FS:SetTextColor(r1, g1, b1)
 
-			local r3, g3, b3 = GetItemColor(p.wish3, 3)
-			row.w3FS:SetTextColor(r3, g3, b3)
+				local r2, g2, b2 = GetItemColor(p.wish2, 2)
+				row.w2FS:SetTextColor(r2, g2, b2)
+
+				local r3, g3, b3 = GetItemColor(p.wish3, 3)
+				row.w3FS:SetTextColor(r3, g3, b3)
+			end
 		else
 			row.nameFS:SetText("")
 			row.w1FS:SetText("")
@@ -1118,7 +1175,6 @@ SlashCmdList["COPELOOT"] = function(msg)
 		Print(CopeLoot.name .. " v" .. CopeLoot.version)
 		DEFAULT_CHAT_FRAME:AddMessage("/copeloot (or /cl) - toggle the CopeLoot window")
 	else
-		-- Default: open the window
 		CopeLoot:Toggle()
 	end
 end
@@ -1162,7 +1218,6 @@ eventFrame:SetScript("OnEvent", function()
 	elseif event == "RAID_ROSTER_UPDATE" or event == "PARTY_MEMBERS_CHANGED" then
 		CheckAutoSwap()
 	elseif event == "CHAT_MSG_RAID" or event == "CHAT_MSG_RAID_LEADER" then
-		-- arg1 = message, arg2 = sender name
 		CopeLoot:OnChatMsg(arg2, arg1)
 	end
 end)
