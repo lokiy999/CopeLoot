@@ -614,4 +614,5 @@ CopeLoot_ReserveData = {
 	{ name = "Zloun", class = "Unknown", boss = "Mar'li", reserve = "Band of Jin", trinkets = { grilek = false, hazzarah = false, renataki = false, wushoolay = false } },
 	{ name = "Zolgend", class = "Unknown", boss = "Thekal", reserve = "Swift Zulian Tiger", trinkets = { grilek = false, hazzarah = false, renataki = false, wushoolay = false } },
 	{ name = "Zoorro", class = "Unknown", boss = "Thekal", reserve = "Swift Zulian Tiger", trinkets = { grilek = false, hazzarah = false, renataki = false, wushoolay = false } },
+	{ name = "Lokiy", class = "Priest", boss = "Hakkar", reserve = "Heart of Hakkar", trinkets = { grilek = true, hazzarah = true, renataki = true, wushoolay = true } },
 }
